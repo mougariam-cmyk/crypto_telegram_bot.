@@ -1,13 +1,22 @@
-# config.py
 import os
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8946677900:AAH_rMA51-jVTKB9fZk6uQUPVEfrQ7arDks")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-# Deposit Wallets
+# TON Main Wallet Address
+TON_WALLET_ADDRESS = os.getenv("TON_WALLET", "UQCemeZQdby8XpnMKqE5qn1yn58Nb7-fTmZo7tHRrY2BtpYM")
+
+# Subscription Plans Prices (USD)
+PRICES = {
+    "1_month": 10,
+    "6_months": 50,
+    "12_months": 80
+}
+
+# All Deposit Wallets (USDT / Crypto Recipient Addresses)
 WALLETS = {
-    "TON": "UQCemeZQdby8XpnMKqE5qn1yn58Nb7-fTmZo7tHRrY2BtpYM",
-    "TRON": "TMCQvy6Ny3eJNTZWXNYcs7uDgBom3PyXHb",
-    "ETHEREUM": "0x99AF129BB09320706A8E26dDDe75041Cc9aC9619",
-    "SOLANA": "GDNSn1CbV43xkPTCpLvi6dYxEjApfM4DBSS8N1tp7Uhd"
+    "TON": TON_WALLET_ADDRESS,
+    "TRON": os.getenv("TRON_WALLET", "TMCQvy6Ny3eJNTZWXNYcs7uDgBom3PyXHb"),
+    "EVM": os.getenv("ETH_WALLET", "0x99AF129BB09320706A8E26dDDe75041Cc9aC9619"),
+    "SOLANA": os.getenv("SOL_WALLET", "GDNSn1CbV43xkPTCpLvi6dYxEjApfM4DBSS8N1tp7Uhd")
 }
