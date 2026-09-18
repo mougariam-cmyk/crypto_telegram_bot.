@@ -1,10 +1,7 @@
 # config.py
+import os
 
-# Telegram Bot Token from @BotFather
-TELEGRAM_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN_HERE"
-
-# Gemini API Key from Google AI Studio
-GEMINI_API_KEY = "YOUR_GEMINI_API_KEY_HERE"
-
-# Your USDT Deposit Wallet Address (TRC20 / BEP20)
-MY_WALLET = "YOUR_USDT_WALLET_ADDRESS_HERE"
+# Read tokens from Render Environment Variables with default fallback
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8211776512:AAHgwSLoFrXMiBUTid7KsdPb6lqBX8ZCPRo")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY_HERE")
+MY_WALLET = os.getenv("MY_WALLET", "YOUR_USDT_WALLET_ADDRESS_HERE")
