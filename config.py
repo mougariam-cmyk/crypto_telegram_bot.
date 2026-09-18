@@ -13,7 +13,7 @@ PRICES = {
     "12_months": 80
 }
 
-# All Deposit Wallets (USDT / Crypto Recipient Addresses)
+# Deposit Wallets
 WALLETS = {
     "TON": TON_WALLET_ADDRESS,
     "TRON": os.getenv("TRON_WALLET", "TMCQvy6Ny3eJNTZWXNYcs7uDgBom3PyXHb"),
