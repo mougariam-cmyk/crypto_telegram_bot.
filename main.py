@@ -1,7 +1,10 @@
-# main.py
+import os
 import random
 import asyncio
 import logging
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
 import google.generativeai as genai
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -15,15 +18,31 @@ from fallback_db import get_fallback_message
 # Enable Logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
+# Dummy HTTP Server to satisfy Render Web Service health check
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"DJANGO Crypto Bot is Live and Healthy 24/7!")
+
+def run_health_check_server():
+    port = int(os.getenv("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    logging.info(f"Health check HTTP server started on port {port}")
+    server.serve_forever()
+
+# Start Health Check Server in a background thread
+threading.Thread(target=run_health_check_server, daemon=True).start()
+
 # Configure Gemini AI
 genai.configure(api_key=GEMINI_API_KEY)
 
 COIN_NAME, BUY_LINK, CONTRACT, CHANNEL, MSG_PER_HOUR, ENABLE_NEW_BUY, PAYMENT = range(7)
 
 BUY_TEMPLATES = [
-    "?? **NEW BUY DETECTED!** ??\n\n?? **Token:** {coin_name}\n?? **Amount:** ${amount}\n?? **Buy Here:** {buy_link}\n?? **Contract:** `{contract}`\n\n?? Whales are accumulating!",
-    "?? **GREEN CANDLE ALERT!** ??\n\nNew buy order executed: **${amount}** on {coin_name}! ??\n?? **Buy Link:** {buy_link}",
-    "?? **WHALE BUY DETECTED!** ??\n\nA massive buy order of **${amount}** just came in for {coin_name}!\n?? **Join Community:** {channel}"
+    "🚀 **NEW BUY DETECTED!** 🚀\n\n💎 **Token:** {coin_name}\n💰 **Amount:** ${amount}\n🛒 **Buy Here:** {buy_link}\n📜 **Contract:** `{contract}`\n\n🔥 Whales are accumulating!",
+    "📈 **GREEN CANDLE ALERT!** 📈\n\nNew buy order executed: **${amount}** on {coin_name}! 🔥\n🛒 **Buy Link:** {buy_link}",
+    "🐳 **WHALE BUY DETECTED!** 🐳\n\nA massive buy order of **${amount}** just came in for {coin_name}!\n📢 **Join Community:** {channel}"
 ]
 
 def generate_ai_post(data):
@@ -61,7 +80,7 @@ def generate_post(data):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_msg = (
-        "Welcome to **DJANGO Crypto Auto-Publisher Bot** ??\n\n"
+        "Welcome to **DJANGO Crypto Auto-Publisher Bot** 🤖\n\n"
         "Let's set up your channel promotion in a few steps.\n\n"
         "Please enter your **Token / Coin Name** (e.g., HIPPO):"
     )
@@ -99,8 +118,8 @@ async def get_msg_per_hour(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = [
         [
-            InlineKeyboardButton("Yes ? (30% Buy Alerts)", callback_data='newbuy_yes'),
-            InlineKeyboardButton("No ? (AI Hype Only)", callback_data='newbuy_no')
+            InlineKeyboardButton("Yes 🚀 (30% Buy Alerts)", callback_data='newbuy_yes'),
+            InlineKeyboardButton("No 🤖 (AI Hype Only)", callback_data='newbuy_no')
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -113,12 +132,12 @@ async def get_new_buy_option(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data['enable_new_buy'] = (query.data == 'newbuy_yes')
 
     keyboard = [
-        [InlineKeyboardButton("??? 1 Month ($10 USDT)", callback_data='10')],
-        [InlineKeyboardButton("??? 6 Months ($50 USDT)", callback_data='50')],
-        [InlineKeyboardButton("??? 1 Year ($80 USDT)", callback_data='80')]
+        [InlineKeyboardButton("💎 1 Month ($10 USDT)", callback_data='10')],
+        [InlineKeyboardButton("💎 6 Months ($50 USDT)", callback_data='50')],
+        [InlineKeyboardButton("💎 1 Year ($80 USDT)", callback_data='80')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text("? Setup completed!\n\nSelect your subscription plan to activate the service:", reply_markup=reply_markup)
+    await query.edit_message_text("✅ Setup completed!\n\nSelect your subscription plan to activate the service:", reply_markup=reply_markup)
     return PAYMENT
 
 async def process_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -129,10 +148,10 @@ async def process_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     coin = context.user_data.get('coin_name')
     
     msg = (
-        f"?? **Order Confirmation for {coin}:**\n\n"
-        f"?? Please transfer **{amount} USDT** to the following deposit address:\n\n"
+        f"💳 **Order Confirmation for {coin}:**\n\n"
+        f"💎 Please transfer **{amount} USDT** to the following deposit address:\n\n"
         f"`{MY_WALLET}`\n\n"
-        "? Once paid, your bot will automatically start publishing AI posts to your channel!"
+        "⚡ Once paid, your bot will automatically start publishing AI posts to your channel!"
     )
     await query.edit_message_text(text=msg, parse_mode='Markdown')
     asyncio.create_task(start_publishing(context.application, context.user_data.copy()))
