@@ -1,7 +1,13 @@
 # config.py
 import os
 
-# Read tokens from Render Environment Variables with default fallback
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8211776512:AAHgwSLoFrXMiBUTid7KsdPb6lqBX8ZCPRo")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY_HERE")
-MY_WALLET = os.getenv("MY_WALLET", "YOUR_USDT_WALLET_ADDRESS_HERE")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+
+# Deposit Wallets
+WALLETS = {
+    "TON": "UQCemeZQdby8XpnMKqE5qn1yn58Nb7-fTmZo7tHRrY2BtpYM",
+    "TRON": "TMCQvy6Ny3eJNTZWXNYcs7uDgBom3PyXHb",
+    "ETHEREUM": "0x99AF129BB09320706A8E26dDDe75041Cc9aC9619",
+    "SOLANA": "GDNSn1CbV43xkPTCpLvi6dYxEjApfM4DBSS8N1tp7Uhd"
+}
