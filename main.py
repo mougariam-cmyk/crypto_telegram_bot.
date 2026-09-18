@@ -12,46 +12,50 @@ from telegram.ext import (
     CallbackQueryHandler, ConversationHandler, filters, ContextTypes
 )
 
-from config import TELEGRAM_BOT_TOKEN, GEMINI_API_KEY, MY_WALLET
+from config import TELEGRAM_BOT_TOKEN, GEMINI_API_KEY, WALLETS
 from fallback_db import get_fallback_message
 
 # Enable Logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# Dummy HTTP Server to satisfy Render Web Service health check
+# Lightweight Web Server for Render Health Check (24/7 Live)
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"DJANGO Crypto Bot is Live and Healthy 24/7!")
+        self.wfile.write(b"DJANGO Crypto Bot Server is Running 24/7!")
 
 def run_health_check_server():
     port = int(os.getenv("PORT", 8080))
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-    logging.info(f"Health check HTTP server started on port {port}")
     server.serve_forever()
 
-# Start Health Check Server in a background thread
 threading.Thread(target=run_health_check_server, daemon=True).start()
 
 # Configure Gemini AI
-genai.configure(api_key=GEMINI_API_KEY)
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
-COIN_NAME, BUY_LINK, CONTRACT, CHANNEL, MSG_PER_HOUR, ENABLE_NEW_BUY, PAYMENT = range(7)
+# Conversation States
+PLAN_SELECT, WALLET_SELECT, CONFIRM_PAY, COIN_NAME, COIN_DESC, CONTRACT, BUY_LINK, CHANNEL, MSG_PER_HOUR, ENABLE_NEW_BUY = range(10)
 
 BUY_TEMPLATES = [
     "🚀 **NEW BUY DETECTED!** 🚀\n\n💎 **Token:** {coin_name}\n💰 **Amount:** ${amount}\n🛒 **Buy Here:** {buy_link}\n📜 **Contract:** `{contract}`\n\n🔥 Whales are accumulating!",
-    "📈 **GREEN CANDLE ALERT!** 📈\n\nNew buy order executed: **${amount}** on {coin_name}! 🔥\n🛒 **Buy Link:** {buy_link}",
-    "🐳 **WHALE BUY DETECTED!** 🐳\n\nA massive buy order of **${amount}** just came in for {coin_name}!\n📢 **Join Community:** {channel}"
+    "📈 **GREEN CANDLE ALERT!** 📈\n\nNew buy order executed: **${amount}** on {coin_name}! 🔥\n🛒 **DEXScreener:** {buy_link}",
+    "🐳 **WHALE BUY DETECTED!** 🐳\n\nA massive buy order of **${amount}** just came in for {coin_name}!\n📢 **Official Channel:** {channel}"
 ]
 
 def generate_ai_post(data):
     try:
+        if not GEMINI_API_KEY:
+            return get_fallback_message(data)
+            
         prompt = f"""
         Write a short, high-energy, hyped promotional post for a crypto token named {data['coin_name']}.
+        Project Details / Description: {data.get('coin_desc', 'Top crypto gem on the market')}
         Use exciting crypto emojis and bullet points.
         Include these exact details:
-        Buy Link: {data['buy_link']}
+        Buy Link (DEXScreener): {data['buy_link']}
         Contract Address: `{data['contract']}`
         Telegram Channel: {data['channel']}
         Keep it concise, hype-driven, and under 4 lines. Output in English only.
@@ -66,7 +70,7 @@ def generate_ai_post(data):
 def generate_post(data):
     enable_buy = data.get('enable_new_buy', False)
     if enable_buy and random.random() < 0.30:
-        amount = random.randint(50, 1000)
+        amount = random.randint(50, 1500)
         template = random.choice(BUY_TEMPLATES)
         return template.format(
             coin_name=data['coin_name'],
@@ -78,33 +82,95 @@ def generate_post(data):
     else:
         return generate_ai_post(data)
 
+# Step 1: Start Command & Subscription Plans
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_msg = (
-        "Welcome to **DJANGO Crypto Auto-Publisher Bot** 🤖\n\n"
-        "Let's set up your channel promotion in a few steps.\n\n"
-        "Please enter your **Token / Coin Name** (e.g., HIPPO):"
+        "🤖 **Welcome to DJANGO Crypto Auto-Promoter Bot!**\n\n"
+        "Boost your crypto channel & group engagement with AI-generated hype posts, "
+        "simulated whale buys, and custom promotional schedules.\n\n"
+        "💰 **Select a Subscription Plan to Activate:**"
     )
-    await update.message.reply_text(welcome_msg, parse_mode='Markdown')
+    keyboard = [
+        [InlineKeyboardButton("💎 1 Month ($10 USDT/Crypto)", callback_data='plan_10')],
+        [InlineKeyboardButton("💎 6 Months ($50 USDT/Crypto)", callback_data='plan_50')],
+        [InlineKeyboardButton("💎 1 Year ($80 USDT/Crypto)", callback_data='plan_80')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(welcome_msg, reply_markup=reply_markup, parse_mode='Markdown')
+    return PLAN_SELECT
+
+# Step 2: Select Network / Wallet
+async def plan_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    plan_amount = query.data.split('_')[1]
+    context.user_data['selected_plan'] = plan_amount
+
+    keyboard = [
+        [InlineKeyboardButton("🌐 TON Network", callback_data='net_TON')],
+        [InlineKeyboardButton("🌐 TRON (TRC20)", callback_data='net_TRON')],
+        [InlineKeyboardButton("🌐 Ethereum (ERC20)", callback_data='net_ETHEREUM')],
+        [InlineKeyboardButton("🌐 Solana Network", callback_data='net_SOLANA')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(f"💳 **Selected Plan:** ${plan_amount} USD\n\nPlease select your preferred payment network:", reply_markup=reply_markup, parse_mode='Markdown')
+    return WALLET_SELECT
+
+# Step 3: Show Wallet & Payment Instructions
+async def wallet_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    network = query.data.split('_')[1]
+    amount = context.user_data.get('selected_plan', '10')
+    wallet_address = WALLETS.get(network, "")
+
+    msg = (
+        f"📥 **Payment Details:**\n\n"
+        f"• **Amount:** `${amount} USD` equivalent\n"
+        f"• **Network:** `{network}`\n"
+        f"• **Deposit Address:**\n`{wallet_address}`\n\n"
+        "⚠️ Send the exact amount to the address above. Click below once payment is sent to complete setup."
+    )
+    keyboard = [
+        [InlineKeyboardButton("✅ I Have Paid (Continue Setup)", callback_data='payment_done')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(msg, reply_markup=reply_markup, parse_mode='Markdown')
+    return CONFIRM_PAY
+
+# Step 4: Settings Flow Input
+async def confirm_payment_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    await query.edit_message_text("✅ Payment status noted!\n\n⚙️ **Let's configure your bot settings.**\n\n1️⃣ Enter your **Token / Coin Name** (e.g., HIPPO):")
     return COIN_NAME
 
 async def get_coin_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['coin_name'] = update.message.text
-    await update.message.reply_text("Great! Now send your **Direct Buy Link** (e.g., DEX/CEX URL):")
-    return BUY_LINK
+    await update.message.reply_text("2️⃣ Send a brief **Description / Hype Points** for your token (used by AI to write posts):")
+    return COIN_DESC
 
-async def get_buy_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['buy_link'] = update.message.text
-    await update.message.reply_text("Send your **Token Contract Address (CA)**:")
+async def get_coin_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['coin_desc'] = update.message.text
+    await update.message.reply_text("3️⃣ Send your **Token Contract Address (CA)**:")
     return CONTRACT
 
 async def get_contract(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['contract'] = update.message.text
-    await update.message.reply_text("Send your **Channel Username or Link** (e.g., @mychannel):")
+    await update.message.reply_text("4️⃣ Send your **DEXScreener or Buy Link**:")
+    return BUY_LINK
+
+async def get_buy_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['buy_link'] = update.message.text
+    await update.message.reply_text("5️⃣ Send your **Channel Username or Link** (e.g., @mychannel or -100xxxxxxxx):")
     return CHANNEL
 
 async def get_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['channel'] = update.message.text
-    await update.message.reply_text("How many posts per hour do you want? (Enter a number from 1 to 4):")
+    await update.message.reply_text("6️⃣ How many posts per hour do you want? (Enter a number from 1 to 4):")
     return MSG_PER_HOUR
 
 async def get_msg_per_hour(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -118,42 +184,29 @@ async def get_msg_per_hour(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = [
         [
-            InlineKeyboardButton("Yes 🚀 (30% Buy Alerts)", callback_data='newbuy_yes'),
+            InlineKeyboardButton("Yes 🚀 (Include Buy Alerts)", callback_data='newbuy_yes'),
             InlineKeyboardButton("No 🤖 (AI Hype Only)", callback_data='newbuy_no')
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Would you like to enable **Simulated New Buy Alerts**?", reply_markup=reply_markup)
+    await update.message.reply_text("7️⃣ Would you like to enable **Simulated New Buy Alerts** (30% chance per post)?", reply_markup=reply_markup)
     return ENABLE_NEW_BUY
 
-async def get_new_buy_option(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    context.user_data['enable_new_buy'] = (query.data == 'newbuy_yes')
-
-    keyboard = [
-        [InlineKeyboardButton("💎 1 Month ($10 USDT)", callback_data='10')],
-        [InlineKeyboardButton("💎 6 Months ($50 USDT)", callback_data='50')],
-        [InlineKeyboardButton("💎 1 Year ($80 USDT)", callback_data='80')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text("✅ Setup completed!\n\nSelect your subscription plan to activate the service:", reply_markup=reply_markup)
-    return PAYMENT
-
-async def process_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def finish_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    amount = query.data
+    context.user_data['enable_new_buy'] = (query.data == 'newbuy_yes')
     coin = context.user_data.get('coin_name')
     
     msg = (
-        f"💳 **Order Confirmation for {coin}:**\n\n"
-        f"💎 Please transfer **{amount} USDT** to the following deposit address:\n\n"
-        f"`{MY_WALLET}`\n\n"
-        "⚡ Once paid, your bot will automatically start publishing AI posts to your channel!"
+        f"🎉 **Setup Complete for {coin}!**\n\n"
+        "⚡ Your auto-publisher is now active!\n"
+        "Make sure to add this bot as an **Administrator** in your channel so it can publish posts."
     )
-    await query.edit_message_text(text=msg, parse_mode='Markdown')
+    await query.edit_message_text(msg, parse_mode='Markdown')
+    
+    # Start auto-publishing loop
     asyncio.create_task(start_publishing(context.application, context.user_data.copy()))
     return ConversationHandler.END
 
@@ -166,14 +219,14 @@ async def start_publishing(app, data):
         post_text = generate_post(data)
         try:
             await app.bot.send_message(chat_id=channel_id, text=post_text, parse_mode='Markdown')
-            logging.info(f"Post sent for {data['coin_name']} to {channel_id}")
+            logging.info(f"Post successfully sent for {data['coin_name']} to {channel_id}")
         except Exception as e:
-            logging.error(f"Failed to send post: {e}")
+            logging.error(f"Failed to send post to channel {channel_id}: {e}")
             
         await asyncio.sleep(delay_seconds)
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Setup canceled.")
+    await update.message.reply_text("Setup canceled. Send /start to begin again.")
     return ConversationHandler.END
 
 if __name__ == '__main__':
@@ -182,13 +235,16 @@ if __name__ == '__main__':
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
+            PLAN_SELECT: [CallbackQueryHandler(plan_selected, pattern='^plan_')],
+            WALLET_SELECT: [CallbackQueryHandler(wallet_selected, pattern='^net_')],
+            CONFIRM_PAY: [CallbackQueryHandler(confirm_payment_step, pattern='^payment_done$')],
             COIN_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_coin_name)],
-            BUY_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_buy_link)],
+            COIN_DESC: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_coin_desc)],
             CONTRACT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_contract)],
+            BUY_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_buy_link)],
             CHANNEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_channel)],
             MSG_PER_HOUR: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_msg_per_hour)],
-            ENABLE_NEW_BUY: [CallbackQueryHandler(get_new_buy_option)],
-            PAYMENT: [CallbackQueryHandler(process_payment)],
+            ENABLE_NEW_BUY: [CallbackQueryHandler(finish_setup, pattern='^newbuy_')],
         },
         fallbacks=[CommandHandler('cancel', cancel)],
     )
