@@ -1,7 +1,3 @@
 python-telegram-bot==20.7
 google-generativeai
-weasyprint
-openpyxl
-pypdf
-hdwallet==2.2.1
 requests
