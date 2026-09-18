@@ -3,6 +3,7 @@ import random
 import asyncio
 import logging
 import threading
+import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import google.generativeai as genai
@@ -12,7 +13,7 @@ from telegram.ext import (
     CallbackQueryHandler, ConversationHandler, filters, ContextTypes
 )
 
-from config import TELEGRAM_BOT_TOKEN, GEMINI_API_KEY, WALLETS
+from config import TELEGRAM_BOT_TOKEN, GEMINI_API_KEY, TON_WALLET_ADDRESS, PRICES
 from fallback_db import get_fallback_message
 
 # Enable Logging
@@ -37,7 +38,7 @@ if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
 # Conversation States
-PLAN_SELECT, WALLET_SELECT, CONFIRM_PAY, COIN_NAME, COIN_DESC, CONTRACT, BUY_LINK, CHANNEL, MSG_PER_HOUR, ENABLE_NEW_BUY = range(10)
+PLAN_SELECT, WAITING_PAYMENT, COIN_NAME, COIN_DESC, CONTRACT, BUY_LINK, CHANNEL, MSG_PER_HOUR, ENABLE_NEW_BUY = range(9)
 
 BUY_TEMPLATES = [
     "🚀 **NEW BUY DETECTED!** 🚀\n\n💎 **Token:** {coin_name}\n💰 **Amount:** ${amount}\n🛒 **Buy Here:** {buy_link}\n📜 **Contract:** `{contract}`\n\n🔥 Whales are accumulating!",
@@ -82,6 +83,21 @@ def generate_post(data):
     else:
         return generate_ai_post(data)
 
+# TON Blockchain Transaction Checker
+def check_ton_payment_received(wallet_address):
+    try:
+        url = f"https://tonapi.io/v2/blockchain/accounts/{wallet_address}/transactions?limit=5"
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            transactions = data.get('transactions', [])
+            if transactions:
+                # Returns True if there's any recent incoming transaction
+                return True
+    except Exception as e:
+        logging.error(f"Error checking TON Blockchain: {e}")
+    return False
+
 # Step 1: Start Command & Subscription Plans
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_msg = (
@@ -91,62 +107,61 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💰 **Select a Subscription Plan to Activate:**"
     )
     keyboard = [
-        [InlineKeyboardButton("💎 1 Month ($10 USDT/Crypto)", callback_data='plan_10')],
-        [InlineKeyboardButton("💎 6 Months ($50 USDT/Crypto)", callback_data='plan_50')],
-        [InlineKeyboardButton("💎 1 Year ($80 USDT/Crypto)", callback_data='plan_80')]
+        [InlineKeyboardButton("💎 1 Day ($10 TON)", callback_data='plan_1_day')],
+        [InlineKeyboardButton("💎 7 Days ($30 TON)", callback_data='plan_7_days')],
+        [InlineKeyboardButton("💎 30 Days ($80 TON)", callback_data='plan_30_days')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(welcome_msg, reply_markup=reply_markup, parse_mode='Markdown')
     return PLAN_SELECT
 
-# Step 2: Select Network / Wallet
+# Step 2: Show TON Deposit Wallet & Start Automatic Blockchain Polling
 async def plan_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    plan_amount = query.data.split('_')[1]
-    context.user_data['selected_plan'] = plan_amount
-
-    keyboard = [
-        [InlineKeyboardButton("🌐 TON Network", callback_data='net_TON')],
-        [InlineKeyboardButton("🌐 TRON (TRC20)", callback_data='net_TRON')],
-        [InlineKeyboardButton("🌐 Ethereum (ERC20)", callback_data='net_ETHEREUM')],
-        [InlineKeyboardButton("🌐 Solana Network", callback_data='net_SOLANA')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(f"💳 **Selected Plan:** ${plan_amount} USD\n\nPlease select your preferred payment network:", reply_markup=reply_markup, parse_mode='Markdown')
-    return WALLET_SELECT
-
-# Step 3: Show Wallet & Payment Instructions
-async def wallet_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    network = query.data.split('_')[1]
-    amount = context.user_data.get('selected_plan', '10')
-    wallet_address = WALLETS.get(network, "")
+    plan_key = query.data.replace('plan_', '')
+    price = PRICES.get(plan_key, 10)
+    context.user_data['selected_plan'] = plan_key
+    context.user_data['plan_price'] = price
 
     msg = (
-        f"📥 **Payment Details:**\n\n"
-        f"• **Amount:** `${amount} USD` equivalent\n"
-        f"• **Network:** `{network}`\n"
-        f"• **Deposit Address:**\n`{wallet_address}`\n\n"
-        "⚠️ Send the exact amount to the address above. Click below once payment is sent to complete setup."
+        f"📥 **TON Payment Order Created!**\n\n"
+        f"• **Selected Plan:** `{plan_key.replace('_', ' ').upper()}`\n"
+        f"• **Amount Required:** `${price} USD` equivalent in TON\n"
+        f"• **Network:** `TON Network`\n\n"
+        f"📍 **Send TON to this Address:**\n`{TON_WALLET_ADDRESS}`\n\n"
+        "⏳ **Status:** *Listening to TON Blockchain...*\n"
+        "The bot will automatically detect your deposit and activate your setup!"
     )
-    keyboard = [
-        [InlineKeyboardButton("✅ I Have Paid (Continue Setup)", callback_data='payment_done')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(msg, reply_markup=reply_markup, parse_mode='Markdown')
-    return CONFIRM_PAY
-
-# Step 4: Settings Flow Input
-async def confirm_payment_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
     
-    await query.edit_message_text("✅ Payment status noted!\n\n⚙️ **Let's configure your bot settings.**\n\n1️⃣ Enter your **Token / Coin Name** (e.g., HIPPO):")
-    return COIN_NAME
+    await query.edit_message_text(msg, parse_mode='Markdown')
+    
+    # Start checking blockchain in background loop
+    user_id = query.from_user.id
+    chat_id = query.message.chat_id
+    
+    # Store initial state flag
+    context.user_data['payment_received'] = False
+    
+    # Trigger background polling
+    asyncio.create_task(poll_ton_payment(context.application, chat_id, user_id, context.user_data))
+    return WAITING_PAYMENT
+
+async def poll_ton_payment(app, chat_id, user_id, user_data):
+    # Maximum wait time: 15 minutes (90 checks * 10s)
+    for _ in range(90):
+        await asyncio.sleep(10)
+        
+        # Perform Blockchain check
+        if check_ton_payment_received(TON_WALLET_ADDRESS):
+            user_data['payment_received'] = True
+            await app.bot.send_message(
+                chat_id=chat_id,
+                text="✅ **Payment Detected Successfully on TON Blockchain!**\n\n⚙️ **Let's configure your bot settings.**\n\n1️⃣ Enter your **Token / Coin Name** (e.g., HIPPO):",
+                parse_mode='Markdown'
+            )
+            break
 
 async def get_coin_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['coin_name'] = update.message.text
@@ -236,8 +251,7 @@ if __name__ == '__main__':
         entry_points=[CommandHandler('start', start)],
         states={
             PLAN_SELECT: [CallbackQueryHandler(plan_selected, pattern='^plan_')],
-            WALLET_SELECT: [CallbackQueryHandler(wallet_selected, pattern='^net_')],
-            CONFIRM_PAY: [CallbackQueryHandler(confirm_payment_step, pattern='^payment_done$')],
+            WAITING_PAYMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_coin_name)],
             COIN_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_coin_name)],
             COIN_DESC: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_coin_desc)],
             CONTRACT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_contract)],
