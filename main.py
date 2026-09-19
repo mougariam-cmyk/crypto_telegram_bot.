@@ -149,14 +149,17 @@ async def get_buy_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['channel'] = update.message.text
-    await update.message.reply_text("6️⃣ How many posts per hour do you want? (Enter a number from 1 to 4):")
+    # تم تعديل الرسالة لتطلب خياراً بين 1 و 20
+    await update.message.reply_text("6️⃣ How many posts per hour do you want? (Enter a number from 1 to 20):")
     return MSG_PER_HOUR
 
 async def get_msg_per_hour(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         count = int(update.message.text)
-        if count < 1: count = 1
-        if count > 4: count = 4
+        if count < 1: 
+            count = 1
+        if count > 20:  # تم تعديل الحد الأقصى هنا من 4 إلى 20
+            count = 20
     except ValueError:
         count = 2
     context.user_data['msg_per_hour'] = count
