@@ -38,7 +38,7 @@ if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
 # Conversation States
-PLAN_SELECT, WAITING_PAYMENT, COIN_NAME, COIN_DESC, CONTRACT, BUY_LINK, CHANNEL, MSG_PER_HOUR, ENABLE_NEW_BUY = range(9)
+PLAN_SELECT, COIN_NAME, COIN_DESC, CONTRACT, BUY_LINK, CHANNEL, MSG_PER_HOUR, ENABLE_NEW_BUY = range(8)
 
 BUY_TEMPLATES = [
     "🚀 **NEW BUY DETECTED!** 🚀\n\n💎 **Token:** {coin_name}\n💰 **Amount:** ${amount}\n🛒 **Buy Here:** {buy_link}\n📜 **Contract:** `{contract}`\n\n🔥 Whales are accumulating!",
@@ -83,20 +83,6 @@ def generate_post(data):
     else:
         return generate_ai_post(data)
 
-# TON Blockchain Transaction Checker (Kept for future use)
-def check_ton_payment_received(wallet_address):
-    try:
-        url = f"https://tonapi.io/v2/blockchain/accounts/{wallet_address}/transactions?limit=5"
-        response = requests.get(url, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            transactions = data.get('transactions', [])
-            if transactions:
-                return True
-    except Exception as e:
-        logging.error(f"Error checking TON Blockchain: {e}")
-    return False
-
 # Step 1: Start Command & Subscription Plans
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_msg = (
@@ -105,7 +91,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "simulated whale buys, and custom promotional schedules.\n\n"
         "💰 **Select a Subscription Plan to Activate:**"
     )
-    # تعديل العروض حسب طلبك
     keyboard = [
         [InlineKeyboardButton("💎 1 Month ($10 TON)", callback_data='plan_1_month')],
         [InlineKeyboardButton("💎 6 Months ($50 TON)", callback_data='plan_6_months')],
@@ -115,7 +100,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(welcome_msg, reply_markup=reply_markup, parse_mode='Markdown')
     return PLAN_SELECT
 
-# Step 2: Bypass Payment & Start Setup Instantly
+# Step 2: Bypass Payment & Start Setup Instantly (English Version)
 async def plan_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -123,30 +108,14 @@ async def plan_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     plan_key = query.data.replace('plan_', '')
     context.user_data['selected_plan'] = plan_key
 
-    # رسالة تجاوز الدفع المؤقت للاختبار
     msg = (
-        "✅ **تم قبول الاشتراك بنجاح (وضع الاختبار مفعل)!**\n\n"
-        "⚙️ **دعنا نقوم بإعداد البوت الخاص بك.**\n\n"
-        "1️⃣ أرسل الآن **اسم العملة / Token Name** (مثال: `HIPPO`):"
+        "✅ **Subscription Activated (Test Mode Enabled)!**\n\n"
+        "⚙️ **Let's configure your bot settings.**\n\n"
+        "1️⃣ Send your **Token / Coin Name** (e.g., HIPPO):"
     )
     
     await query.edit_message_text(msg, parse_mode='Markdown')
-    
-    # الانتقال مباشرة لطلب اسم العملة دون انتظار الدفع
     return COIN_NAME
-
-# The old polling function is kept inactive here for when you want to enable payments later
-async def poll_ton_payment(app, chat_id, user_id, user_data):
-    for _ in range(90):
-        await asyncio.sleep(10)
-        if check_ton_payment_received(TON_WALLET_ADDRESS):
-            user_data['payment_received'] = True
-            await app.bot.send_message(
-                chat_id=chat_id,
-                text="✅ **Payment Detected Successfully on TON Blockchain!**\n\n⚙️ **Let's configure your bot settings.**\n\n1️⃣ Enter your **Token / Coin Name** (e.g., HIPPO):",
-                parse_mode='Markdown'
-            )
-            break
 
 async def get_coin_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['coin_name'] = update.message.text
@@ -236,7 +205,6 @@ if __name__ == '__main__':
         entry_points=[CommandHandler('start', start)],
         states={
             PLAN_SELECT: [CallbackQueryHandler(plan_selected, pattern='^plan_')],
-            WAITING_PAYMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_coin_name)],
             COIN_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_coin_name)],
             COIN_DESC: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_coin_desc)],
             CONTRACT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_contract)],
