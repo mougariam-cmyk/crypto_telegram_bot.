@@ -1,7 +1,8 @@
 import os
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8946677900:AAH_rMA51-jVTKB9fZk6uQUPVEfrQ7arDks")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+# التوكن يقرأ حصراً من متغيرات البيئة بـ Render لحمايته من التجميد
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # TON Main Wallet Address
 TON_WALLET_ADDRESS = os.getenv("TON_WALLET", "UQCemeZQdby8XpnMKqE5qn1yn58Nb7-fTmZo7tHRrY2BtpYM")
