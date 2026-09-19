@@ -29,8 +29,12 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 
 def run_health_check_server():
     port = int(os.getenv("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-    server.serve_forever()
+    try:
+        server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+        logging.info(f"Health check server running on port {port}")
+        server.serve_forever()
+    except Exception as e:
+        logging.error(f"Health check server error: {e}")
 
 threading.Thread(target=run_health_check_server, daemon=True).start()
 
@@ -49,7 +53,6 @@ def generate_ai_post(data):
             logging.warning("GEMINI_API_KEY is missing! Using fallback message.")
             return get_fallback_message(data)
             
-        # إنشاء العميل باستخدام المكتبة الجديدة google-genai
         client = genai.Client(api_key=GEMINI_API_KEY)
         
         prompt = f"""
@@ -62,7 +65,6 @@ Contract Address: `{data['contract']}`
 Telegram Channel: {data['channel']}
 Keep it concise, hype-driven, and under 4 lines. Output in English only.
 """
-        # طلب التوليد باستخدام نموذج gemini-2.5-flash
         response = client.models.generate_content(
             model='gemini-2.5-flash',
             contents=prompt,
@@ -110,7 +112,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(welcome_msg, reply_markup=reply_markup, parse_mode='Markdown')
     return PLAN_SELECT
 
-# Step 2: Bypass Payment & Start Setup Instantly (English Version)
+# Step 2: Bypass Payment & Start Setup Instantly
 async def plan_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -149,7 +151,6 @@ async def get_buy_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['channel'] = update.message.text
-    # تم تعديل الرسالة لتطلب خياراً بين 1 و 20
     await update.message.reply_text("6️⃣ How many posts per hour do you want? (Enter a number from 1 to 20):")
     return MSG_PER_HOUR
 
@@ -158,7 +159,7 @@ async def get_msg_per_hour(update: Update, context: ContextTypes.DEFAULT_TYPE):
         count = int(update.message.text)
         if count < 1: 
             count = 1
-        if count > 20:  # تم تعديل الحد الأقصى هنا من 4 إلى 20
+        if count > 20: 
             count = 20
     except ValueError:
         count = 2
@@ -188,7 +189,7 @@ async def finish_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await query.edit_message_text(msg, parse_mode='Markdown')
     
-    # Start auto-publishing loop
+    # Start auto-publishing loop securely as background task
     asyncio.create_task(start_publishing(context.application, context.user_data.copy()))
     return ConversationHandler.END
 
@@ -197,7 +198,6 @@ async def start_publishing(app, data):
     delay_seconds = int((60 / msg_per_hour) * 60)
     channel_id = str(data.get('channel', '')).strip()
     
-    # Auto-format channel ID/Username if @ or -100 is missing
     if channel_id and not channel_id.startswith('@') and not channel_id.startswith('-100'):
         channel_id = f"@{channel_id}"
     
@@ -206,12 +206,25 @@ async def start_publishing(app, data):
     while True:
         try:
             post_text = generate_post(data)
-            await app.bot.send_message(chat_id=channel_id, text=post_text, parse_mode='Markdown')
+            try:
+                await app.bot.send_message(chat_id=channel_id, text=post_text, parse_mode='Markdown')
+            except Exception as parse_err:
+                # إذا حدث خطأ تنسيق في Markdown من نصوص الذكاء الاصطناعي، يتم إرسال النص بدون تنسيق لحماية الحلقة
+                logging.warning(f"Markdown parse error, sending plain text: {parse_err}")
+                await app.bot.send_message(chat_id=channel_id, text=post_text)
+
             logging.info(f"Post successfully sent for {data['coin_name']} to {channel_id}")
+        except asyncio.CancelledError:
+            logging.info(f"Publishing task for {channel_id} was gracefully cancelled.")
+            break
         except Exception as e:
             logging.error(f"Failed to send post to channel {channel_id}: {e}")
             
-        await asyncio.sleep(delay_seconds)
+        try:
+            await asyncio.sleep(delay_seconds)
+        except asyncio.CancelledError:
+            logging.info(f"Sleep interrupted. Stopping loop for {channel_id}.")
+            break
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Setup canceled. Send /start to begin again.")
@@ -237,4 +250,4 @@ if __name__ == '__main__':
 
     app.add_handler(conv_handler)
     print("DJANGO Bot is running...")
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
