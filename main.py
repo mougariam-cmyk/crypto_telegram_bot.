@@ -181,12 +181,18 @@ async def finish_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start_publishing(app, data):
     msg_per_hour = data.get('msg_per_hour', 2)
-    delay_seconds = (60 / msg_per_hour) * 60 
-    channel_id = data.get('channel')
+    delay_seconds = int((60 / msg_per_hour) * 60)
+    channel_id = str(data.get('channel', '')).strip()
     
+    # Auto-format channel ID/Username if @ or -100 is missing
+    if channel_id and not channel_id.startswith('@') and not channel_id.startswith('-100'):
+        channel_id = f"@{channel_id}"
+    
+    logging.info(f"Starting auto-publisher for {channel_id} with interval {delay_seconds}s")
+
     while True:
-        post_text = generate_post(data)
         try:
+            post_text = generate_post(data)
             await app.bot.send_message(chat_id=channel_id, text=post_text, parse_mode='Markdown')
             logging.info(f"Post successfully sent for {data['coin_name']} to {channel_id}")
         except Exception as e:
