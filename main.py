@@ -1,12 +1,12 @@
 import os
 import random
-import sqlite3
+import psycopg2
 import asyncio
 import logging
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# الاستيراد الحديث لمكتبة Google GenAI
+# Google GenAI library
 from google import genai
 from telegram import Update
 from telegram.ext import (
@@ -21,17 +21,24 @@ from fallback_db import get_fallback_message
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 # ==========================================
-# DATABASE SYSTEM (SQLite) FOR PERSISTENCE
+# DATABASE SYSTEM (Supabase / PostgreSQL)
 # ==========================================
-DB_FILE = "bot_database.db"
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+def get_db_connection():
+    """Establish a connection to the Supabase database."""
+    db_url = DATABASE_URL
+    if db_url and db_url.startswith("postgres://"):
+        db_url = db_url.replace("postgres://", "postgresql://", 1)
+    return psycopg2.connect(db_url)
 
 def init_db():
     """Create subscribers table if it doesn't exist."""
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
+            user_id BIGINT PRIMARY KEY,
             username TEXT,
             selected_plan TEXT,
             coin_name TEXT,
@@ -42,31 +49,32 @@ def init_db():
             msg_per_hour INTEGER,
             enable_new_buy INTEGER,
             subscription_status TEXT DEFAULT 'active'
-        )
+        );
     ''')
     conn.commit()
+    cursor.close()
     conn.close()
 
 def save_user_data(user_id: int, username: str, data: dict):
-    """Save or update full user subscription & setup data."""
-    conn = sqlite3.connect(DB_FILE)
+    """Save or update full user subscription & setup data in Supabase."""
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
         INSERT INTO users (
             user_id, username, selected_plan, coin_name, coin_desc, 
             contract, buy_link, channel, msg_per_hour, enable_new_buy, subscription_status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active')
         ON CONFLICT(user_id) DO UPDATE SET
-            username=excluded.username,
-            selected_plan=excluded.selected_plan,
-            coin_name=excluded.coin_name,
-            coin_desc=excluded.coin_desc,
-            contract=excluded.contract,
-            buy_link=excluded.buy_link,
-            channel=excluded.channel,
-            msg_per_hour=excluded.msg_per_hour,
-            enable_new_buy=excluded.enable_new_buy,
-            subscription_status='active'
+            username=EXCLUDED.username,
+            selected_plan=EXCLUDED.selected_plan,
+            coin_name=EXCLUDED.coin_name,
+            coin_desc=EXCLUDED.coin_desc,
+            contract=EXCLUDED.contract,
+            buy_link=EXCLUDED.buy_link,
+            channel=EXCLUDED.channel,
+            msg_per_hour=EXCLUDED.msg_per_hour,
+            enable_new_buy=EXCLUDED.enable_new_buy,
+            subscription_status='active';
     ''', (
         user_id,
         username,
@@ -80,17 +88,19 @@ def save_user_data(user_id: int, username: str, data: dict):
         1 if data.get('enable_new_buy', False) else 0
     ))
     conn.commit()
+    cursor.close()
     conn.close()
 
 def get_active_users():
-    """Retrieve all active users and their setup to restore background publishing on restart."""
-    conn = sqlite3.connect(DB_FILE)
+    """Retrieve all active users from Supabase to restore background publishing on restart."""
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
         SELECT user_id, selected_plan, coin_name, coin_desc, contract, buy_link, channel, msg_per_hour, enable_new_buy
-        FROM users WHERE subscription_status = 'active'
+        FROM users WHERE subscription_status = 'active';
     ''')
     rows = cursor.fetchall()
+    cursor.close()
     conn.close()
     
     users_data = []
@@ -108,7 +118,7 @@ def get_active_users():
         })
     return users_data
 
-# Initialize Database Table immediately
+# Initialize Database Table on startup
 init_db()
 
 # Lightweight Web Server for Render Health Check (24/7 Live)
@@ -132,14 +142,14 @@ threading.Thread(target=run_health_check_server, daemon=True).start()
 # Conversation States
 PLAN_SELECT, COIN_NAME, COIN_DESC, CONTRACT, BUY_LINK, CHANNEL, MSG_PER_HOUR, ENABLE_NEW_BUY = range(8)
 
-# منشورات الشراء والحماس (تحتوي على روابط نصية)
+# Hype & Buy Templates (Include text links)
 BUY_TEMPLATES = [
     "🚀 **NEW BUY DETECTED!** 🚀\n\n💎 **Token:** {coin_name}\n💰 **Amount:** ${amount}\n🛒 **Buy Here:** {buy_link}\n📜 **Contract:** `{contract}`\n\n🔥 Whales are accumulating!",
     "📈 **GREEN CANDLE ALERT!** 📈\n\nNew buy order executed: **${amount}** on {coin_name}! 🔥\n🛒 **DEXScreener:** {buy_link}\n📜 **Contract:** `{contract}`",
     "🐳 **WHALE BUY DETECTED!** 🐳\n\nA massive buy order of **${amount}** just came in for {coin_name}!\n📢 **Official Channel:** {channel}\n🛒 **Buy Now:** {buy_link}"
 ]
 
-# منشورات التفاعل والتحية للمجتمع (بدون أي روابط)
+# Community & Engagement Templates (No links)
 COMMUNITY_TEMPLATES = [
     "☀️ **Good Morning {coin_name} Army!**\nWhat are your price targets for today? Drop them below! 👇🔥",
     "🔥 **GM legends!** Is {coin_name} ready for the next big move? Stay tuned! 🚀",
@@ -148,7 +158,7 @@ COMMUNITY_TEMPLATES = [
 ]
 
 def generate_ai_post(data):
-    """توليد منشور حماسي يحتوي على الروابط النصية عبر الذكاء الاصطناعي"""
+    """Generate high-energy promo post with text links via Gemini AI."""
     try:
         if not GEMINI_API_KEY:
             logging.warning("GEMINI_API_KEY is missing! Using fallback message.")
@@ -183,19 +193,19 @@ Keep it concise, hype-driven, and under 4 lines. Output in English only.
 
 def generate_post(data):
     """
-    تحديد نوع المنشور:
-    - منشور تفاعلي (Community) بدون روابط
-    - منشور شراء مفاجئ (Buy Alert) مع روابط
-    - منشور حماسي ذكاء اصطناعي (AI Hype) مع روابط
+    Determine post type:
+    - Community engagement post (30%) - no links
+    - Simulated buy alert post (30%) - with links
+    - AI Hype post (40%) - with links
     """
     post_type_chance = random.random()
     
-    # 30% منشور تفاعل وتحية (بدون روابط)
+    # 30% Community engagement post
     if post_type_chance < 0.30:
         template = random.choice(COMMUNITY_TEMPLATES)
         return template.format(coin_name=data['coin_name'])
     
-    # 30% منشور شراء مفاجئ (مع روابط نصية) إذا تم تفعيله
+    # 30% Simulated Buy alert post (if enabled)
     enable_buy = data.get('enable_new_buy', False)
     if enable_buy and post_type_chance < 0.60:
         amount = random.randint(50, 1500)
@@ -208,7 +218,7 @@ def generate_post(data):
             amount=amount
         )
     
-    # 40% منشور حماسي من الذكاء الاصطناعي (مع روابط نصية)
+    # 40% AI Hype post
     return generate_ai_post(data)
 
 # Step 1: Start Command & Subscription Plans
@@ -229,7 +239,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(welcome_msg, reply_markup=reply_markup, parse_mode='Markdown')
     return PLAN_SELECT
 
-# Step 2: Bypass Payment & Start Setup Instantly
+# Step 2: Select Plan & Start Setup
 async def plan_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -302,9 +312,9 @@ async def finish_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     username = query.from_user.username or ""
 
-    # Save to SQLite Database
+    # Save to Supabase Database
     save_user_data(user_id, username, context.user_data)
-    logging.info(f"User {user_id} saved to SQLite database.")
+    logging.info(f"User {user_id} saved to Supabase database.")
     
     msg = (
         f"🎉 **Setup Complete for {coin}!**\n\n"
@@ -364,7 +374,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Restore background publisher tasks for all users from DB upon bot startup
 async def restore_active_tasks(app):
     users = get_active_users()
-    logging.info(f"Restoring {len(users)} active auto-publisher tasks from database...")
+    logging.info(f"Restoring {len(users)} active auto-publisher tasks from Supabase database...")
     for user_data in users:
         asyncio.create_task(start_publishing(app, user_data))
 
@@ -392,5 +402,5 @@ if __name__ == '__main__':
     loop = asyncio.get_event_loop()
     loop.create_task(restore_active_tasks(app))
 
-    print("DJANGO Bot is running with SQLite Database Backup...")
+    print("DJANGO Bot is running with Supabase Database Integration...")
     app.run_polling(drop_pending_updates=True)
