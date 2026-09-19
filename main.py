@@ -33,12 +33,12 @@ def get_db_connection():
     return psycopg2.connect(db_url)
 
 def init_db():
-    """Create subscribers table if it doesn't exist."""
+    """Create subscribers table with Composite Primary Key if it doesn't exist."""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
-            user_id BIGINT PRIMARY KEY,
+            user_id BIGINT,
             username TEXT,
             selected_plan TEXT,
             coin_name TEXT,
@@ -48,7 +48,8 @@ def init_db():
             channel TEXT,
             msg_per_hour INTEGER,
             enable_new_buy INTEGER,
-            subscription_status TEXT DEFAULT 'active'
+            subscription_status TEXT DEFAULT 'active',
+            PRIMARY KEY (user_id, channel)
         );
     ''')
     conn.commit()
@@ -56,7 +57,7 @@ def init_db():
     conn.close()
 
 def save_user_data(user_id: int, username: str, data: dict):
-    """Save or update full user subscription & setup data in Supabase."""
+    """Save or update user subscription & setup data based on (user_id, channel)."""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
@@ -64,14 +65,13 @@ def save_user_data(user_id: int, username: str, data: dict):
             user_id, username, selected_plan, coin_name, coin_desc, 
             contract, buy_link, channel, msg_per_hour, enable_new_buy, subscription_status
         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active')
-        ON CONFLICT(user_id) DO UPDATE SET
+        ON CONFLICT(user_id, channel) DO UPDATE SET
             username=EXCLUDED.username,
             selected_plan=EXCLUDED.selected_plan,
             coin_name=EXCLUDED.coin_name,
             coin_desc=EXCLUDED.coin_desc,
             contract=EXCLUDED.contract,
             buy_link=EXCLUDED.buy_link,
-            channel=EXCLUDED.channel,
             msg_per_hour=EXCLUDED.msg_per_hour,
             enable_new_buy=EXCLUDED.enable_new_buy,
             subscription_status='active';
