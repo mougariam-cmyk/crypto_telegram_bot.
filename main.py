@@ -6,7 +6,8 @@ import threading
 import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-import google.generativeai as genai
+# الاستيراد الحديث لمكتبة Google GenAI
+from google import genai
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, 
@@ -33,10 +34,6 @@ def run_health_check_server():
 
 threading.Thread(target=run_health_check_server, daemon=True).start()
 
-# Configure Gemini AI
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-
 # Conversation States
 PLAN_SELECT, COIN_NAME, COIN_DESC, CONTRACT, BUY_LINK, CHANNEL, MSG_PER_HOUR, ENABLE_NEW_BUY = range(8)
 
@@ -49,23 +46,36 @@ BUY_TEMPLATES = [
 def generate_ai_post(data):
     try:
         if not GEMINI_API_KEY:
+            logging.warning("GEMINI_API_KEY is missing! Using fallback message.")
             return get_fallback_message(data)
             
+        # إنشاء العميل باستخدام المكتبة الجديدة google-genai
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        
         prompt = f"""
-        Write a short, high-energy, hyped promotional post for a crypto token named {data['coin_name']}.
-        Project Details / Description: {data.get('coin_desc', 'Top crypto gem on the market')}
-        Use exciting crypto emojis and bullet points.
-        Include these exact details:
-        Buy Link (DEXScreener): {data['buy_link']}
-        Contract Address: `{data['contract']}`
-        Telegram Channel: {data['channel']}
-        Keep it concise, hype-driven, and under 4 lines. Output in English only.
-        """
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(prompt)
-        return response.text
+Write a short, high-energy, hyped promotional post for a crypto token named {data['coin_name']}.
+Project Details / Description: {data.get('coin_desc', 'Top crypto gem on the market')}
+Use exciting crypto emojis and bullet points.
+Include these exact details:
+Buy Link (DEXScreener): {data['buy_link']}
+Contract Address: `{data['contract']}`
+Telegram Channel: {data['channel']}
+Keep it concise, hype-driven, and under 4 lines. Output in English only.
+"""
+        # طلب التوليد باستخدام نموذج gemini-2.5-flash
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+        )
+        
+        if response and response.text:
+            return response.text
+        else:
+            logging.warning("Gemini returned an empty response. Falling back to database.")
+            return get_fallback_message(data)
+
     except Exception as e:
-        logging.warning(f"Gemini API error, falling back to database: {e}")
+        logging.error(f"Gemini API Error details: {type(e).__name__} - {e}")
         return get_fallback_message(data)
 
 def generate_post(data):
