@@ -41,10 +41,11 @@ threading.Thread(target=run_health_check_server, daemon=True).start()
 # Conversation States
 PLAN_SELECT, COIN_NAME, COIN_DESC, CONTRACT, BUY_LINK, CHANNEL, MSG_PER_HOUR, ENABLE_NEW_BUY = range(8)
 
+# القوالب المصممة للنشر مع الأزرار التفاعلية أسفلها
 BUY_TEMPLATES = [
-    "🚀 **NEW BUY DETECTED!** 🚀\n\n💎 **Token:** {coin_name}\n💰 **Amount:** ${amount}\n🛒 **Buy Here:** {buy_link}\n📜 **Contract:** `{contract}`\n\n🔥 Whales are accumulating!",
-    "📈 **GREEN CANDLE ALERT!** 📈\n\nNew buy order executed: **${amount}** on {coin_name}! 🔥\n🛒 **DEXScreener:** {buy_link}",
-    "🐳 **WHALE BUY DETECTED!** 🐳\n\nA massive buy order of **${amount}** just came in for {coin_name}!\n📢 **Official Channel:** {channel}"
+    "🚀 **NEW BUY DETECTED!** 🚀\n\n💎 **Token:** {coin_name}\n💰 **Amount:** ${amount}\n📜 **Contract:** `{contract}`\n\n🔥 Whales are accumulating!",
+    "📈 **GREEN CANDLE ALERT!** 📈\n\nNew buy order executed: **${amount}** on {coin_name}! 🔥\n📜 **Contract:** `{contract}`",
+    "🐳 **WHALE BUY DETECTED!** 🐳\n\nA massive buy order of **${amount}** just came in for {coin_name}!\n📜 **Contract:** `{contract}`"
 ]
 
 def generate_ai_post(data):
@@ -60,10 +61,8 @@ Write a short, high-energy, hyped promotional post for a crypto token named {dat
 Project Details / Description: {data.get('coin_desc', 'Top crypto gem on the market')}
 Use exciting crypto emojis and bullet points.
 Include these exact details:
-Buy Link (DEXScreener): {data['buy_link']}
 Contract Address: `{data['contract']}`
-Telegram Channel: {data['channel']}
-Keep it concise, hype-driven, and under 4 lines. Output in English only.
+Keep it concise, hype-driven, and under 3 lines. Output in English only. Do not include buy links or channel links in the body text as they will be attached via buttons.
 """
         response = client.models.generate_content(
             model='gemini-2.5-flash',
@@ -87,9 +86,7 @@ def generate_post(data):
         template = random.choice(BUY_TEMPLATES)
         return template.format(
             coin_name=data['coin_name'],
-            buy_link=data['buy_link'],
             contract=data['contract'],
-            channel=data['channel'],
             amount=amount
         )
     else:
@@ -146,7 +143,7 @@ async def get_contract(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_buy_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['buy_link'] = update.message.text
-    await update.message.reply_text("5️⃣ Send your **Channel Username or Link** (e.g., @mychannel or -100xxxxxxxx):")
+    await update.message.reply_text("5️⃣ Send your **Channel Username or Link** (e.g., @mychannel or https://t.me/mychannel):")
     return CHANNEL
 
 async def get_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -198,7 +195,7 @@ async def start_publishing(app, data):
     delay_seconds = int((60 / msg_per_hour) * 60)
     channel_id = str(data.get('channel', '')).strip()
     
-    if channel_id and not channel_id.startswith('@') and not channel_id.startswith('-100'):
+    if channel_id and not channel_id.startswith('@') and not channel_id.startswith('-100') and not channel_id.startswith('http'):
         channel_id = f"@{channel_id}"
     
     logging.info(f"Starting auto-publisher for {channel_id} with interval {delay_seconds}s")
@@ -206,12 +203,48 @@ async def start_publishing(app, data):
     while True:
         try:
             post_text = generate_post(data)
+            
+            # --- إنشاء الأزرار التفاعلية ---
+            keyboard = []
+            buy_link = data.get('buy_link', '').strip()
+            channel_link = data.get('channel', '').strip()
+
+            # زر الشراء / DEXScreener
+            if buy_link:
+                buy_url = buy_link if buy_link.startswith(('http://', 'https://')) else f"https://{buy_link}"
+                keyboard.append([InlineKeyboardButton("🛒 Buy Now / DEXScreener", url=buy_url)])
+
+            # زر القناة الرسمية
+            if channel_link:
+                if channel_link.startswith(('http://', 'https://')):
+                    ch_url = channel_link
+                elif channel_link.startswith('@'):
+                    ch_url = f"https://t.me/{channel_link[1:]}"
+                elif not channel_link.startswith('-100'):
+                    ch_url = f"https://t.me/{channel_link}"
+                else:
+                    ch_url = None
+
+                if ch_url:
+                    keyboard.append([InlineKeyboardButton("📢 Official Channel", url=ch_url)])
+
+            reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+
+            # --- إرسال الرسالة مع الأزرار ---
             try:
-                await app.bot.send_message(chat_id=channel_id, text=post_text, parse_mode='Markdown')
+                await app.bot.send_message(
+                    chat_id=channel_id, 
+                    text=post_text, 
+                    parse_mode='Markdown',
+                    reply_markup=reply_markup
+                )
             except Exception as parse_err:
-                # إذا حدث خطأ تنسيق في Markdown من نصوص الذكاء الاصطناعي، يتم إرسال النص بدون تنسيق لحماية الحلقة
                 logging.warning(f"Markdown parse error, sending plain text: {parse_err}")
-                await app.bot.send_message(chat_id=channel_id, text=post_text)
+                await app.bot.send_message(
+                    chat_id=channel_id, 
+                    text=post_text,
+                    reply_markup=reply_markup
+                )
 
             logging.info(f"Post successfully sent for {data['coin_name']} to {channel_id}")
         except asyncio.CancelledError:
