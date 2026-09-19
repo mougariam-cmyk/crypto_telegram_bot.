@@ -3,7 +3,6 @@ import random
 import asyncio
 import logging
 import threading
-import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # الاستيراد الحديث لمكتبة Google GenAI
@@ -41,14 +40,23 @@ threading.Thread(target=run_health_check_server, daemon=True).start()
 # Conversation States
 PLAN_SELECT, COIN_NAME, COIN_DESC, CONTRACT, BUY_LINK, CHANNEL, MSG_PER_HOUR, ENABLE_NEW_BUY = range(8)
 
-# القوالب المصممة للنشر مع الأزرار التفاعلية أسفلها
+# منشورات الشراء والحماس (تأتي مع أزرار)
 BUY_TEMPLATES = [
     "🚀 **NEW BUY DETECTED!** 🚀\n\n💎 **Token:** {coin_name}\n💰 **Amount:** ${amount}\n📜 **Contract:** `{contract}`\n\n🔥 Whales are accumulating!",
     "📈 **GREEN CANDLE ALERT!** 📈\n\nNew buy order executed: **${amount}** on {coin_name}! 🔥\n📜 **Contract:** `{contract}`",
     "🐳 **WHALE BUY DETECTED!** 🐳\n\nA massive buy order of **${amount}** just came in for {coin_name}!\n📜 **Contract:** `{contract}`"
 ]
 
+# منشورات التفاعل والمجتمع (بدون أزرار أو روابط)
+COMMUNITY_TEMPLATES = [
+    "☀️ **Good Morning {coin_name} Army!**\nWhat are your price targets for today? Drop them below! 👇🔥",
+    "🔥 **GM legends!** Is {coin_name} ready for the next big move? Stay tuned! 🚀",
+    "💪 **Community Check!** How strong are the {coin_name} holders today? Let's go! 💎🙌",
+    "🌙 **GN to all {coin_name} believers!** Big things are coming tomorrow! ✨"
+]
+
 def generate_ai_post(data):
+    """توليد منشور حماس وتسويق للعملة عبر الذكاء الاصطناعي (بدون روابط داخل النص)"""
     try:
         if not GEMINI_API_KEY:
             logging.warning("GEMINI_API_KEY is missing! Using fallback message.")
@@ -62,7 +70,7 @@ Project Details / Description: {data.get('coin_desc', 'Top crypto gem on the mar
 Use exciting crypto emojis and bullet points.
 Include these exact details:
 Contract Address: `{data['contract']}`
-Keep it concise, hype-driven, and under 3 lines. Output in English only. Do not include buy links or channel links in the body text as they will be attached via buttons.
+CRITICAL: Do NOT include any web links, URLs, or buy links in your response body. Keep it under 3 lines, English only.
 """
         response = client.models.generate_content(
             model='gemini-2.5-flash',
@@ -80,17 +88,36 @@ Keep it concise, hype-driven, and under 3 lines. Output in English only. Do not 
         return get_fallback_message(data)
 
 def generate_post(data):
+    """
+    يحدد نوع المنشور:
+    - منشور تفاعلي (Community)
+    - منشور شراء مفاجئ (Buy Alert)
+    - منشور حماس من الذكاء الاصطناعي (AI Hype)
+    يرجع (نص المنشور, نوع المنشور)
+    """
+    post_type_chance = random.random()
+    
+    # 30% منشور تفاعل مجتمعي (بدون أزرار)
+    if post_type_chance < 0.30:
+        template = random.choice(COMMUNITY_TEMPLATES)
+        text = template.format(coin_name=data['coin_name'])
+        return text, "community"
+    
+    # 30% منشور شراء وهمي (مع أزرار) إذا تم تفعيله
     enable_buy = data.get('enable_new_buy', False)
-    if enable_buy and random.random() < 0.30:
+    if enable_buy and post_type_chance < 0.60:
         amount = random.randint(50, 1500)
         template = random.choice(BUY_TEMPLATES)
-        return template.format(
+        text = template.format(
             coin_name=data['coin_name'],
             contract=data['contract'],
             amount=amount
         )
-    else:
-        return generate_ai_post(data)
+        return text, "hype"
+    
+    # 40% منشور حماسي ذكاء اصطناعي (مع أزرار)
+    text = generate_ai_post(data)
+    return text, "hype"
 
 # Step 1: Start Command & Subscription Plans
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -202,35 +229,38 @@ async def start_publishing(app, data):
 
     while True:
         try:
-            post_text = generate_post(data)
+            post_text, post_category = generate_post(data)
             
-            # --- إنشاء الأزرار التفاعلية ---
-            keyboard = []
-            buy_link = data.get('buy_link', '').strip()
-            channel_link = data.get('channel', '').strip()
+            reply_markup = None
+            
+            # نضع الأزرار التفاعلية فقط إذا كان المنشور تسويقياً/شراء (hype)
+            if post_category == "hype":
+                keyboard = []
+                buy_link = data.get('buy_link', '').strip()
+                channel_link = data.get('channel', '').strip()
 
-            # زر الشراء / DEXScreener
-            if buy_link:
-                buy_url = buy_link if buy_link.startswith(('http://', 'https://')) else f"https://{buy_link}"
-                keyboard.append([InlineKeyboardButton("🛒 Buy Now / DEXScreener", url=buy_url)])
+                # زر الشراء / DEXScreener
+                if buy_link:
+                    buy_url = buy_link if buy_link.startswith(('http://', 'https://')) else f"https://{buy_link}"
+                    keyboard.append([InlineKeyboardButton("🛒 Buy Now / DEXScreener", url=buy_url)])
 
-            # زر القناة الرسمية
-            if channel_link:
-                if channel_link.startswith(('http://', 'https://')):
-                    ch_url = channel_link
-                elif channel_link.startswith('@'):
-                    ch_url = f"https://t.me/{channel_link[1:]}"
-                elif not channel_link.startswith('-100'):
-                    ch_url = f"https://t.me/{channel_link}"
-                else:
-                    ch_url = None
+                # زر القناة الرسمية
+                if channel_link:
+                    if channel_link.startswith(('http://', 'https://')):
+                        ch_url = channel_link
+                    elif channel_link.startswith('@'):
+                        ch_url = f"https://t.me/{channel_link[1:]}"
+                    elif not channel_link.startswith('-100'):
+                        ch_url = f"https://t.me/{channel_link}"
+                    else:
+                        ch_url = None
 
-                if ch_url:
-                    keyboard.append([InlineKeyboardButton("📢 Official Channel", url=ch_url)])
+                    if ch_url:
+                        keyboard.append([InlineKeyboardButton("📢 Official Channel", url=ch_url)])
 
-            reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+                reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
 
-            # --- إرسال الرسالة مع الأزرار ---
+            # إرسال الرسالة
             try:
                 await app.bot.send_message(
                     chat_id=channel_id, 
@@ -246,7 +276,7 @@ async def start_publishing(app, data):
                     reply_markup=reply_markup
                 )
 
-            logging.info(f"Post successfully sent for {data['coin_name']} to {channel_id}")
+            logging.info(f"Post successfully sent for {data['coin_name']} to {channel_id} (Category: {post_category})")
         except asyncio.CancelledError:
             logging.info(f"Publishing task for {channel_id} was gracefully cancelled.")
             break
