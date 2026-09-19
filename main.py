@@ -7,7 +7,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # الاستيراد الحديث لمكتبة Google GenAI
 from google import genai
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, 
     CallbackQueryHandler, ConversationHandler, filters, ContextTypes
@@ -40,14 +40,14 @@ threading.Thread(target=run_health_check_server, daemon=True).start()
 # Conversation States
 PLAN_SELECT, COIN_NAME, COIN_DESC, CONTRACT, BUY_LINK, CHANNEL, MSG_PER_HOUR, ENABLE_NEW_BUY = range(8)
 
-# منشورات الشراء والحماس (تأتي مع أزرار)
+# منشورات الشراء والحماس (تحتوي على روابط نصية)
 BUY_TEMPLATES = [
-    "🚀 **NEW BUY DETECTED!** 🚀\n\n💎 **Token:** {coin_name}\n💰 **Amount:** ${amount}\n📜 **Contract:** `{contract}`\n\n🔥 Whales are accumulating!",
-    "📈 **GREEN CANDLE ALERT!** 📈\n\nNew buy order executed: **${amount}** on {coin_name}! 🔥\n📜 **Contract:** `{contract}`",
-    "🐳 **WHALE BUY DETECTED!** 🐳\n\nA massive buy order of **${amount}** just came in for {coin_name}!\n📜 **Contract:** `{contract}`"
+    "🚀 **NEW BUY DETECTED!** 🚀\n\n💎 **Token:** {coin_name}\n💰 **Amount:** ${amount}\n🛒 **Buy Here:** {buy_link}\n📜 **Contract:** `{contract}`\n\n🔥 Whales are accumulating!",
+    "📈 **GREEN CANDLE ALERT!** 📈\n\nNew buy order executed: **${amount}** on {coin_name}! 🔥\n🛒 **DEXScreener:** {buy_link}\n📜 **Contract:** `{contract}`",
+    "🐳 **WHALE BUY DETECTED!** 🐳\n\nA massive buy order of **${amount}** just came in for {coin_name}!\n📢 **Official Channel:** {channel}\n🛒 **Buy Now:** {buy_link}"
 ]
 
-# منشورات التفاعل والمجتمع (بدون أزرار أو روابط)
+# منشورات التفاعل والتحية للمجتمع (بدون أي روابط)
 COMMUNITY_TEMPLATES = [
     "☀️ **Good Morning {coin_name} Army!**\nWhat are your price targets for today? Drop them below! 👇🔥",
     "🔥 **GM legends!** Is {coin_name} ready for the next big move? Stay tuned! 🚀",
@@ -56,7 +56,7 @@ COMMUNITY_TEMPLATES = [
 ]
 
 def generate_ai_post(data):
-    """توليد منشور حماس وتسويق للعملة عبر الذكاء الاصطناعي (بدون روابط داخل النص)"""
+    """توليد منشور حماسي يحتوي على الروابط النصية عبر الذكاء الاصطناعي"""
     try:
         if not GEMINI_API_KEY:
             logging.warning("GEMINI_API_KEY is missing! Using fallback message.")
@@ -69,8 +69,10 @@ Write a short, high-energy, hyped promotional post for a crypto token named {dat
 Project Details / Description: {data.get('coin_desc', 'Top crypto gem on the market')}
 Use exciting crypto emojis and bullet points.
 Include these exact details:
+Buy Link (DEXScreener): {data['buy_link']}
 Contract Address: `{data['contract']}`
-CRITICAL: Do NOT include any web links, URLs, or buy links in your response body. Keep it under 3 lines, English only.
+Telegram Channel: {data['channel']}
+Keep it concise, hype-driven, and under 4 lines. Output in English only.
 """
         response = client.models.generate_content(
             model='gemini-2.5-flash',
@@ -89,35 +91,33 @@ CRITICAL: Do NOT include any web links, URLs, or buy links in your response body
 
 def generate_post(data):
     """
-    يحدد نوع المنشور:
-    - منشور تفاعلي (Community)
-    - منشور شراء مفاجئ (Buy Alert)
-    - منشور حماس من الذكاء الاصطناعي (AI Hype)
-    يرجع (نص المنشور, نوع المنشور)
+    تحديد نوع المنشور:
+    - منشور تفاعلي (Community) بدون روابط
+    - منشور شراء مفاجئ (Buy Alert) مع روابط
+    - منشور حماسي ذكاء اصطناعي (AI Hype) مع روابط
     """
     post_type_chance = random.random()
     
-    # 30% منشور تفاعل مجتمعي (بدون أزرار)
+    # 30% منشور تفاعل وتحية (بدون روابط)
     if post_type_chance < 0.30:
         template = random.choice(COMMUNITY_TEMPLATES)
-        text = template.format(coin_name=data['coin_name'])
-        return text, "community"
+        return template.format(coin_name=data['coin_name'])
     
-    # 30% منشور شراء وهمي (مع أزرار) إذا تم تفعيله
+    # 30% منشور شراء مفاجئ (مع روابط نصية) إذا تم تفعيله
     enable_buy = data.get('enable_new_buy', False)
     if enable_buy and post_type_chance < 0.60:
         amount = random.randint(50, 1500)
         template = random.choice(BUY_TEMPLATES)
-        text = template.format(
+        return template.format(
             coin_name=data['coin_name'],
+            buy_link=data['buy_link'],
             contract=data['contract'],
+            channel=data['channel'],
             amount=amount
         )
-        return text, "hype"
     
-    # 40% منشور حماسي ذكاء اصطناعي (مع أزرار)
-    text = generate_ai_post(data)
-    return text, "hype"
+    # 40% منشور حماسي من الذكاء الاصطناعي (مع روابط نصية)
+    return generate_ai_post(data)
 
 # Step 1: Start Command & Subscription Plans
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -127,6 +127,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "simulated whale buys, and custom promotional schedules.\n\n"
         "💰 **Select a Subscription Plan to Activate:**"
     )
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     keyboard = [
         [InlineKeyboardButton("💎 1 Month ($10 TON)", callback_data='plan_1_month')],
         [InlineKeyboardButton("💎 6 Months ($50 TON)", callback_data='plan_6_months')],
@@ -189,6 +190,7 @@ async def get_msg_per_hour(update: Update, context: ContextTypes.DEFAULT_TYPE):
         count = 2
     context.user_data['msg_per_hour'] = count
 
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     keyboard = [
         [
             InlineKeyboardButton("Yes 🚀 (Include Buy Alerts)", callback_data='newbuy_yes'),
@@ -229,54 +231,22 @@ async def start_publishing(app, data):
 
     while True:
         try:
-            post_text, post_category = generate_post(data)
-            
-            reply_markup = None
-            
-            # نضع الأزرار التفاعلية فقط إذا كان المنشور تسويقياً/شراء (hype)
-            if post_category == "hype":
-                keyboard = []
-                buy_link = data.get('buy_link', '').strip()
-                channel_link = data.get('channel', '').strip()
+            post_text = generate_post(data)
 
-                # زر الشراء / DEXScreener
-                if buy_link:
-                    buy_url = buy_link if buy_link.startswith(('http://', 'https://')) else f"https://{buy_link}"
-                    keyboard.append([InlineKeyboardButton("🛒 Buy Now / DEXScreener", url=buy_url)])
-
-                # زر القناة الرسمية
-                if channel_link:
-                    if channel_link.startswith(('http://', 'https://')):
-                        ch_url = channel_link
-                    elif channel_link.startswith('@'):
-                        ch_url = f"https://t.me/{channel_link[1:]}"
-                    elif not channel_link.startswith('-100'):
-                        ch_url = f"https://t.me/{channel_link}"
-                    else:
-                        ch_url = None
-
-                    if ch_url:
-                        keyboard.append([InlineKeyboardButton("📢 Official Channel", url=ch_url)])
-
-                reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
-
-            # إرسال الرسالة
             try:
                 await app.bot.send_message(
                     chat_id=channel_id, 
                     text=post_text, 
-                    parse_mode='Markdown',
-                    reply_markup=reply_markup
+                    parse_mode='Markdown'
                 )
             except Exception as parse_err:
                 logging.warning(f"Markdown parse error, sending plain text: {parse_err}")
                 await app.bot.send_message(
                     chat_id=channel_id, 
-                    text=post_text,
-                    reply_markup=reply_markup
+                    text=post_text
                 )
 
-            logging.info(f"Post successfully sent for {data['coin_name']} to {channel_id} (Category: {post_category})")
+            logging.info(f"Post successfully sent for {data['coin_name']} to {channel_id}")
         except asyncio.CancelledError:
             logging.info(f"Publishing task for {channel_id} was gracefully cancelled.")
             break
