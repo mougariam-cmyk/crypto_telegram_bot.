@@ -1,5 +1,6 @@
 import os
 import random
+import sqlite3
 import asyncio
 import logging
 import threading
@@ -18,6 +19,97 @@ from fallback_db import get_fallback_message
 
 # Enable Logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+
+# ==========================================
+# DATABASE SYSTEM (SQLite) FOR PERSISTENCE
+# ==========================================
+DB_FILE = "bot_database.db"
+
+def init_db():
+    """Create subscribers table if it doesn't exist."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            selected_plan TEXT,
+            coin_name TEXT,
+            coin_desc TEXT,
+            contract TEXT,
+            buy_link TEXT,
+            channel TEXT,
+            msg_per_hour INTEGER,
+            enable_new_buy INTEGER,
+            subscription_status TEXT DEFAULT 'active'
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def save_user_data(user_id: int, username: str, data: dict):
+    """Save or update full user subscription & setup data."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO users (
+            user_id, username, selected_plan, coin_name, coin_desc, 
+            contract, buy_link, channel, msg_per_hour, enable_new_buy, subscription_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+        ON CONFLICT(user_id) DO UPDATE SET
+            username=excluded.username,
+            selected_plan=excluded.selected_plan,
+            coin_name=excluded.coin_name,
+            coin_desc=excluded.coin_desc,
+            contract=excluded.contract,
+            buy_link=excluded.buy_link,
+            channel=excluded.channel,
+            msg_per_hour=excluded.msg_per_hour,
+            enable_new_buy=excluded.enable_new_buy,
+            subscription_status='active'
+    ''', (
+        user_id,
+        username,
+        data.get('selected_plan', ''),
+        data.get('coin_name', ''),
+        data.get('coin_desc', ''),
+        data.get('contract', ''),
+        data.get('buy_link', ''),
+        data.get('channel', ''),
+        data.get('msg_per_hour', 2),
+        1 if data.get('enable_new_buy', False) else 0
+    ))
+    conn.commit()
+    conn.close()
+
+def get_active_users():
+    """Retrieve all active users and their setup to restore background publishing on restart."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT user_id, selected_plan, coin_name, coin_desc, contract, buy_link, channel, msg_per_hour, enable_new_buy
+        FROM users WHERE subscription_status = 'active'
+    ''')
+    rows = cursor.fetchall()
+    conn.close()
+    
+    users_data = []
+    for row in rows:
+        users_data.append({
+            'user_id': row[0],
+            'selected_plan': row[1],
+            'coin_name': row[2],
+            'coin_desc': row[3],
+            'contract': row[4],
+            'buy_link': row[5],
+            'channel': row[6],
+            'msg_per_hour': row[7],
+            'enable_new_buy': bool(row[8])
+        })
+    return users_data
+
+# Initialize Database Table immediately
+init_db()
 
 # Lightweight Web Server for Render Health Check (24/7 Live)
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -207,6 +299,12 @@ async def finish_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     context.user_data['enable_new_buy'] = (query.data == 'newbuy_yes')
     coin = context.user_data.get('coin_name')
+    user_id = query.from_user.id
+    username = query.from_user.username or ""
+
+    # Save to SQLite Database
+    save_user_data(user_id, username, context.user_data)
+    logging.info(f"User {user_id} saved to SQLite database.")
     
     msg = (
         f"🎉 **Setup Complete for {coin}!**\n\n"
@@ -263,6 +361,13 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Setup canceled. Send /start to begin again.")
     return ConversationHandler.END
 
+# Restore background publisher tasks for all users from DB upon bot startup
+async def restore_active_tasks(app):
+    users = get_active_users()
+    logging.info(f"Restoring {len(users)} active auto-publisher tasks from database...")
+    for user_data in users:
+        asyncio.create_task(start_publishing(app, user_data))
+
 if __name__ == '__main__':
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
@@ -282,5 +387,10 @@ if __name__ == '__main__':
     )
 
     app.add_handler(conv_handler)
-    print("DJANGO Bot is running...")
+    
+    # Restore saved campaigns on startup
+    loop = asyncio.get_event_loop()
+    loop.create_task(restore_active_tasks(app))
+
+    print("DJANGO Bot is running with SQLite Database Backup...")
     app.run_polling(drop_pending_updates=True)
