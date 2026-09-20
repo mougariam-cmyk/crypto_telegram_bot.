@@ -37,16 +37,13 @@ def get_next_gemini_client():
         return None
     key = GEMINI_API_KEYS[api_key_index % len(GEMINI_API_KEYS)]
     api_key_index += 1
-    # استخدام الإصدار الأحدث المتوافق مع مكتبة google-genai
     return genai.Client(api_key=key)
 
-# دالة مساعدة لتوليد النصوص لتجنب خطأ النماذج القديمة
 def generate_ai_text(prompt: str):
     client = get_next_gemini_client()
     if not client:
         return None
     try:
-        # استخدام موديل gemini-2.5-flash أو الموديل القياسي المتوفر
         response = client.models.generate_content(
             model='gemini-2.5-flash',
             contents=prompt,
@@ -55,7 +52,6 @@ def generate_ai_text(prompt: str):
     except Exception as e:
         logging.error(f"Gemini API Error with rotation: {e}")
         try:
-            # محاولة احتياطية بنموذج بديل في حال فشل الأول
             response = client.models.generate_content(
                 model='gemini-1.5-flash',
                 contents=prompt,
@@ -65,7 +61,6 @@ def generate_ai_text(prompt: str):
             logging.error(f"Gemini Fallback Error: {err}")
             return None
 
-# Enable Logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 # ==========================================
@@ -280,7 +275,6 @@ def parse_channel_input(user_input: str) -> str:
     return clean_input
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # واجهة ترحيبية بالإنجليزية حصرياً، تعرف بالذكاء الاصطناعي وقراءة الروح المعنوية للأعضاء
     welcome_text = (
         "🤖 **Welcome to AI Community Booster!**\n\n"
         "I am an advanced Artificial Intelligence designed to analyze members' morale "
@@ -306,7 +300,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message:
         await update.message.reply_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
     else:
-        await update.callback_query.edit_message_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        await update.callback_query.edit_message_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_Mode="Markdown")
     
     return CHOOSE_LANG
 
@@ -319,7 +313,6 @@ async def language_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     t = TRANSLATIONS.get(lang_code, TRANSLATIONS['en'])
     
-    # صفحة الروابط الرسمية (قنوات تيليجرام، تويتر، الموقع الرسمي)
     keyboard = [
         [InlineKeyboardButton(t['btn_telegram'], url="https://t.me/YourChannelLink")],
         [InlineKeyboardButton(t['btn_twitter'], url="https://twitter.com/YourProfile")],
@@ -377,7 +370,7 @@ if __name__ == '__main__':
                 CHOOSE_LANG: [
                     CallbackQueryHandler(language_chosen, pattern='^lang_')
                 ],
-                SOCIAL_LIN_KS_STATE := SOCIAL_LINKS: [
+                SOCIAL_LINKS: [
                     CallbackQueryHandler(proceed_to_dashboard, pattern='^proceed_to_dashboard$')
                 ],
                 MAIN_MENU: [
