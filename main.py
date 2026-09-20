@@ -34,9 +34,11 @@ def get_db_connection():
     return psycopg2.connect(db_url)
 
 def init_db():
-    """Create subscribers table with Composite Primary Key if it doesn't exist."""
+    """Create subscribers table and migrate missing columns if needed."""
     conn = get_db_connection()
     cursor = conn.cursor()
+    
+    # 1. إنشاء الجدول إن لم يكن موجوداً
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id BIGINT,
@@ -54,6 +56,12 @@ def init_db():
             PRIMARY KEY (user_id, channel)
         );
     ''')
+    
+    # 2. إضافة عمود link_ratio للجدول القديم تلقائياً إن كان غائباً
+    cursor.execute('''
+        DO $$          BEGIN              IF NOT EXISTS (                 SELECT 1 FROM information_schema.columns                  WHERE table_name='users' AND column_name='link_ratio'             ) THEN                 ALTER TABLE users ADD COLUMN link_ratio INTEGER DEFAULT 100;             END IF;         END $$;
+    ''')
+    
     conn.commit()
     cursor.close()
     conn.close()
@@ -346,7 +354,6 @@ async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         keyboard = []
         for ch, coin in channels:
-            # Clean @ symbol to avoid Regex issues in Telegram callback_data
             clean_ch = ch.replace('@', '')
             keyboard.append([InlineKeyboardButton(f"📢 {ch} ({coin})", callback_data=f"edit_ch_{clean_ch}")])
         
