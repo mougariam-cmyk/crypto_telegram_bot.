@@ -300,7 +300,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message:
         await update.message.reply_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
     else:
-        await update.callback_query.edit_message_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        await update.callback_query.edit_message_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_Mode="Markdown")
     
     return CHOOSE_LANG
 
@@ -374,8 +374,8 @@ if __name__ == '__main__':
                     CallbackQueryHandler(proceed_to_dashboard, pattern='^proceed_to_dashboard$')
                 ],
                 MAIN_MENU: [
-                    CallbackQueryHandler(show_subscription_plans_callback, pattern='^menu_buy_new$'),
-                    CallbackQueryHandler(show_subscription_plans_callback, pattern='^menu_edit_existing$')
+                    CallbackQueryHandler(start, pattern='^menu_buy_new$'),
+                    CallbackQueryHandler(start, pattern='^menu_edit_existing$')
                 ],
                 PLAN_SELECT: [
                     CallbackQueryHandler(show_subscription_plans_callback, pattern='^plan_')
