@@ -1,5 +1,4 @@
 import os
-import re
 import random
 import psycopg2
 import asyncio
@@ -7,7 +6,6 @@ import logging
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# Google GenAI library
 from google import genai
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -15,7 +13,6 @@ from telegram.ext import (
     CallbackQueryHandler, ConversationHandler, filters, ContextTypes
 )
 
-from config import TELEGRAM_BOT_TOKEN, TON_WALLET_ADDRESS, PRICES
 from fallback_db import get_fallback_message
 
 # ==========================================
@@ -29,6 +26,7 @@ GEMINI_API_KEYS = [
 ]
 GEMINI_API_KEYS = [k for k in GEMINI_API_KEYS if k]
 
+# Fallback to single key if numbered keys are not found
 if not GEMINI_API_KEYS and os.getenv("GEMINI_API_KEY"):
     GEMINI_API_KEYS = [os.getenv("GEMINI_API_KEY")]
 
@@ -77,19 +75,6 @@ def init_db():
             PRIMARY KEY (user_id, channel)
         );
     ''')
-    
-    cursor.execute('''
-        DO $$ 
-        BEGIN 
-            IF NOT EXISTS (
-                SELECT 1 FROM information_schema.columns 
-                WHERE table_name='users' AND column_name='link_ratio'
-            ) THEN 
-                ALTER TABLE users ADD COLUMN link_ratio INTEGER DEFAULT 100; 
-            END IF; 
-        END $$;
-    ''')
-    
     conn.commit()
     cursor.close()
     conn.close()
@@ -636,15 +621,15 @@ async def get_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = (
         f"⚠️ IMPORTANT STEP: Admin Rights Required!\n\n"
-        f"Please add our bot as an Administrator in your channel {formatted_channel} with Post Messages permission.\n\n"
-        "📋 **Steps to add the bot:**\n"
-        "1. Copy the Bot ID below.\n"
-        "2. Go to your channel/group, open administrators list, and search for the bot using this ID.\n"
-        "3. Grant it administrator permissions (Post Messages).\n"
-        "4. Click the button below once done!"
+        f"Please add this bot as an Administrator in your channel `{formatted_channel}` with Post Messages permission.\n\n"
+        "📋 Instructions:\n"
+        "1. Copy the bot username below using the button.\n"
+        "2. Go to your channel settings -> Administrators -> Add Admin.\n"
+        "3. Paste the username in the search bar, select the bot, and grant posting permission.\n\n"
+        "Click the button below once you have promoted the bot!"
     )
     keyboard = [
-        [InlineKeyboardButton("📋 Copy Bot ID (@DJANGO_CRYPTO_BOT)", copy_text={"text": "@DJANGO_CRYPTO_BOT"})],
+        [InlineKeyboardButton("📋 Copy Bot Username (@DJANGO_CRYPTO_BOT)", switch_inline_query_current_chat="@DJANGO_CRYPTO_BOT")],
         [InlineKeyboardButton("🔗 I have promoted the bot / Continue", callback_data='verify_admin')],
         [InlineKeyboardButton("🔙 Back", callback_data='back_to_channel_input')]
     ]
@@ -725,15 +710,15 @@ async def get_link_ratio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == 'back_to_verify_admin':
         msg = (
             f"⚠️ IMPORTANT STEP: Admin Rights Required!\n\n"
-            f"Please add our bot as an Administrator in your channel.\n\n"
-            "📋 **Steps to add the bot:**\n"
-            "1. Copy the Bot ID below.\n"
-            "2. Go to your channel/group, open administrators list, and search for the bot using this ID.\n"
-            "3. Grant it administrator permissions (Post Messages).\n"
-            "4. Click the button below once done!"
+            f"Please add this bot as an Administrator in your channel `@DJANGO_CRYPTO_BOT`[cite: 10].\n\n"
+            "📋 Instructions:\n"
+            "1. Copy the bot username below using the button.\n"
+            "2. Go to your channel settings -> Administrators -> Add Admin.\n"
+            "3. Paste the username in the search bar, select the bot, and grant posting permission.\n\n"
+            "Click the button below once you have promoted the bot!"
         )
         keyboard = [
-            [InlineKeyboardButton("📋 Copy Bot ID (@DJANGO_CRYPTO_BOT)", copy_text={"text": "@DJANGO_CRYPTO_BOT"})],
+            [InlineKeyboardButton("📋 Copy Bot Username (@DJANGO_CRYPTO_BOT)", switch_inline_query_current_chat="@DJANGO_CRYPTO_BOT")],
             [InlineKeyboardButton("🔗 I have promoted the bot / Continue", callback_data='verify_admin')],
             [InlineKeyboardButton("🔙 Back", callback_data='back_to_channel_input')]
         ]
@@ -753,3 +738,143 @@ async def get_link_ratio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text("8️⃣ Would you like to enable Simulated New Buy Alerts?", reply_markup=reply_markup)
     return ENABLE_NEW_BUY
+
+async def finish_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        if query.data.startswith('newbuy_'):
+            context.user_data['enable_new_buy'] = (query.data == 'newbuy_yes')
+        user_id = query.from_user.id
+        username = query.from_user.username or ""
+    else:
+        user_id = update.effective_user.id
+        username = update.effective_user.username or ""
+    
+    channel = context.user_data.get('channel')
+
+    save_user_data(user_id, username, context.user_data)
+    await show_edit_options(update, context)
+    
+    if channel in ACTIVE_PUBLISH_TASKS:
+        ACTIVE_PUBLISH_TASKS[channel].cancel()
+
+    task = asyncio.create_task(start_publishing(context.application, context.user_data.copy()))
+    ACTIVE_PUBLISH_TASKS[channel] = task
+
+    context.user_data['is_editing'] = True
+    return EDIT_OPTIONS_MENU
+
+async def start_publishing(app, data):
+    plan = data.get('selected_plan', 'free')
+    
+    if plan == 'free':
+        delay_seconds = 21600
+    else:
+        msg_per_hour = data.get('msg_per_hour', 2)
+        delay_seconds = int((60 / msg_per_hour) * 60)
+        
+    channel_id = str(data.get('channel', '')).strip()
+    
+    while True:
+        try:
+            post_text = generate_post(data)
+            reply_markup = FREE_PLAN_FOOTER_BUTTONS if plan == 'free' else None
+
+            await app.bot.send_message(
+                chat_id=channel_id, 
+                text=post_text, 
+                reply_markup=reply_markup
+            )
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logging.error(f"Failed to send post to channel {channel_id}: {e}")
+            
+        try:
+            await asyncio.sleep(delay_seconds)
+        except asyncio.CancelledError:
+            break
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['is_editing'] = False
+    await update.message.reply_text("Setup canceled. Send /start to open the main menu.")
+    return ConversationHandler.END
+
+async def restore_active_tasks(app):
+    users = get_active_users()
+    for user_data in users:
+        channel = user_data.get('channel')
+        if channel in ACTIVE_PUBLISH_TASKS:
+            ACTIVE_PUBLISH_TASKS[channel].cancel()
+        task = asyncio.create_task(start_publishing(app, user_data))
+        ACTIVE_PUBLISH_TASKS[channel] = task
+
+if __name__ == '__main__':
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not token:
+        raise ValueError("No TELEGRAM_BOT_TOKEN provided in environment variables!")
+
+    app = ApplicationBuilder().token(token).build()
+
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler('start', start)],
+        states={
+            MAIN_MENU: [CallbackQueryHandler(main_menu_handler, pattern='^menu_')],
+            EDIT_SELECT_CHANNEL: [
+                CallbackQueryHandler(select_channel_to_edit, pattern='^edit_ch_'),
+                CallbackQueryHandler(select_channel_to_edit, pattern='^back_to_main$')
+            ],
+            EDIT_OPTIONS_MENU: [
+                CallbackQueryHandler(edit_options_handler, pattern='^opt_'),
+                CallbackQueryHandler(edit_options_handler, pattern='^back_to_main$')
+            ],
+            CONFIRM_CANCEL_SUB: [CallbackQueryHandler(confirm_cancel_sub_handler, pattern='^(confirm_cancel_|back_to_edit_menu)')],
+            PLAN_SELECT: [
+                CallbackQueryHandler(plan_selected, pattern='^plan_'),
+                CallbackQueryHandler(plan_selected, pattern='^back_to_main$')
+            ],
+            COIN_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_coin_name),
+                CallbackQueryHandler(back_to_plans_handler, pattern='^back_to_plans$'),
+                CallbackQueryHandler(back_to_edit_menu_handler, pattern='^back_to_edit_menu$')
+            ],
+            COIN_DESC: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_coin_desc),
+                CallbackQueryHandler(back_to_plans_handler, pattern='^back_to_coin_name$')
+            ],
+            CONTRACT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_contract),
+                CallbackQueryHandler(back_to_plans_handler, pattern='^back_to_coin_desc$')
+            ],
+            BUY_LINK: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_buy_link),
+                CallbackQueryHandler(back_to_plans_handler, pattern='^back_to_contract$')
+            ],
+            CHANNEL: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_channel),
+                CallbackQueryHandler(back_to_plans_handler, pattern='^back_to_buy_link$')
+            ],
+            VERIFY_ADMIN: [
+                CallbackQueryHandler(verify_admin_status, pattern='^(verify_admin|back_to_channel_input)$')
+            ],
+            MSG_PER_HOUR: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_msg_per_hour)],
+            LINK_RATIO: [
+                CallbackQueryHandler(get_link_ratio, pattern='^(ratio_|back_to_verify_admin)')
+            ],
+            ENABLE_NEW_BUY: [
+                CallbackQueryHandler(finish_setup, pattern='^newbuy_'),
+                CallbackQueryHandler(edit_options_handler, pattern='^opt_'),
+                CallbackQueryHandler(back_to_edit_menu_handler, pattern='^back_to_edit_menu$')
+            ],
+        },
+        fallbacks=[CommandHandler('cancel', cancel)],
+    )
+
+    app.add_handler(conv_handler)
+    
+    loop = asyncio.get_event_loop()
+    loop.create_task(restore_active_tasks(app))
+
+    print("DJANGO Bot running...")
+    app.run_polling(drop_pending_updates=True, stop_signals=None)
