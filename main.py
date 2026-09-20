@@ -113,8 +113,8 @@ def get_user_channel_data(user_id: int, channel: str):
     cursor = conn.cursor()
     cursor.execute('''
         SELECT selected_plan, coin_name, coin_desc, contract, buy_link, channel, msg_per_hour, enable_new_buy, link_ratio
-        FROM users WHERE user_id = %s AND channel = %s AND subscription_status = 'active';
-    ''', (user_id, channel))
+        FROM users WHERE user_id = %s AND (channel = %s OR channel = %s) AND subscription_status = 'active';
+    ''', (user_id, channel, f"@{channel}" if not channel.startswith('@') else channel.replace('@', '')))
     row = cursor.fetchone()
     cursor.close()
     conn.close()
@@ -346,7 +346,9 @@ async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         keyboard = []
         for ch, coin in channels:
-            keyboard.append([InlineKeyboardButton(f"📢 {ch} ({coin})", callback_data=f"edit_ch_{ch}")])
+            # Clean @ symbol to avoid Regex issues in Telegram callback_data
+            clean_ch = ch.replace('@', '')
+            keyboard.append([InlineKeyboardButton(f"📢 {ch} ({coin})", callback_data=f"edit_ch_{clean_ch}")])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text("⚙️ **Select the channel you want to edit:**", reply_markup=reply_markup, parse_mode='Markdown')
@@ -356,15 +358,15 @@ async def select_channel_to_edit(update: Update, context: ContextTypes.DEFAULT_T
     query = update.callback_query
     await query.answer()
 
-    channel_name = query.data.replace('edit_ch_', '')
+    raw_channel = query.data.replace('edit_ch_', '')
     user_id = query.from_user.id
-    channel_data = get_user_channel_data(user_id, channel_name)
+    channel_data = get_user_channel_data(user_id, raw_channel)
 
     if channel_data:
         context.user_data.update(channel_data)
         msg = (
-            f"✏️ **Editing settings for {channel_name}**\n\n"
-            "1️⃣ Send your updated **Token / Coin Name** (or send current: `{}`)".format(channel_data['coin_name'])
+            f"✏️ **Editing settings for {channel_data['channel']}**\n\n"
+            f"1️⃣ Send your updated **Token / Coin Name** (Current: `{channel_data['coin_name']}`):"
         )
         await query.edit_message_text(msg, parse_mode='Markdown')
         return COIN_NAME
