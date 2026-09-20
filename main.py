@@ -16,7 +16,7 @@ from telegram.ext import (
 from fallback_db import get_fallback_message
 
 # ==========================================
-# MULTI-GEMINI API KEYS ROTATION SYSTEM
+# MULTI-GEMINI API KEYS ROTATION SYSTEM (Updated)
 # ==========================================
 GEMINI_API_KEYS = [
     os.getenv("GEMINI_API_KEY_1", ""),
@@ -37,7 +37,33 @@ def get_next_gemini_client():
         return None
     key = GEMINI_API_KEYS[api_key_index % len(GEMINI_API_KEYS)]
     api_key_index += 1
+    # استخدام الإصدار الأحدث المتوافق مع مكتبة google-genai
     return genai.Client(api_key=key)
+
+# دالة مساعدة لتوليد النصوص لتجنب خطأ النماذج القديمة
+def generate_ai_text(prompt: str):
+    client = get_next_gemini_client()
+    if not client:
+        return None
+    try:
+        # استخدام موديل gemini-2.5-flash أو الموديل القياسي المتوفر
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+        )
+        return response.text
+    except Exception as e:
+        logging.error(f"Gemini API Error with rotation: {e}")
+        try:
+            # محاولة احتياطية بنموذج بديل في حال فشل الأول
+            response = client.models.generate_content(
+                model='gemini-1.5-flash',
+                contents=prompt,
+            )
+            return response.text
+        except Exception as err:
+            logging.error(f"Gemini Fallback Error: {err}")
+            return None
 
 # Enable Logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -244,4 +270,28 @@ async def show_subscription_plans(update: Update, context: ContextTypes.DEFAULT_
         await update.message.reply_text(welcome_msg, reply_markup=InlineKeyboardMarkup(keyboard))
     return PLAN_SELECT
 
-# (بقية الدوال المساعدة تكمل هنا بنفس النسق...)
+if __name__ == '__main__':
+    TOKEN = os.getenv("TELEGRAM_TOKEN")
+    if not TOKEN:
+        logging.error("No TELEGRAM_TOKEN found in environment variables!")
+    else:
+        application = ApplicationBuilder().token(TOKEN).build()
+        
+        conv_handler = ConversationHandler(
+            entry_points=[CommandHandler('start', start)],
+            states={
+                MAIN_MENU: [
+                    CallbackQueryHandler(start, pattern='^menu_buy_new$'),
+                    CallbackQueryHandler(start, pattern='^menu_edit_existing$')
+                ],
+                PLAN_SELECT: [
+                    CallbackQueryHandler(show_subscription_plans, pattern='^plan_')
+                ]
+            },
+            fallbacks=[CommandHandler('start', start)],
+        )
+        
+        application.add_handler(conv_handler)
+        
+        logging.info("Starting Telegram Bot Polling...")
+        application.run_polling()
