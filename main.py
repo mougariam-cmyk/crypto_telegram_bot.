@@ -59,7 +59,7 @@ def init_db():
     
     # 2. إضافة عمود link_ratio للجدول القديم تلقائياً إن كان غائباً
     cursor.execute('''
-        DO $$          BEGIN              IF NOT EXISTS (                 SELECT 1 FROM information_schema.columns                  WHERE table_name='users' AND column_name='link_ratio'             ) THEN                 ALTER TABLE users ADD COLUMN link_ratio INTEGER DEFAULT 100;             END IF;         END $$;
+        DO $$          BEGIN              IF NOT EXISTS (                 SELECT 1 FROM information_schema.columns                  WHERE table_name='users' AND column_name='link_ratio'             ) THEN                  ALTER TABLE users ADD COLUMN link_ratio INTEGER DEFAULT 100;              END IF;          END $$;
     ''')
     
     conn.commit()
@@ -193,8 +193,9 @@ threading.Thread(target=run_health_check_server, daemon=True).start()
 # Conversation States
 (
     MAIN_MENU, PLAN_SELECT, COIN_NAME, COIN_DESC, CONTRACT, 
-    BUY_LINK, CHANNEL, VERIFY_ADMIN, MSG_PER_HOUR, LINK_RATIO, ENABLE_NEW_BUY, EDIT_SELECT_CHANNEL
-) = range(12)
+    BUY_LINK, CHANNEL, VERIFY_ADMIN, MSG_PER_HOUR, LINK_RATIO, ENABLE_NEW_BUY, 
+    EDIT_SELECT_CHANNEL, EDIT_OPTIONS_MENU
+) = range(13)
 
 # Global dictionary to track active publishing asyncio tasks by channel_id
 ACTIVE_PUBLISH_TASKS = {}
@@ -361,6 +362,39 @@ async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⚙️ **Select the channel you want to edit:**", reply_markup=reply_markup, parse_mode='Markdown')
         return EDIT_SELECT_CHANNEL
 
+# --- عرض أزرار التعديل التفاعلية ---
+async def show_edit_options(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = context.user_data
+    channel = data.get('channel', 'القناة')
+    
+    text = (
+        f"⚙️ **إعدادات القناة الحالية لـ {channel}:**\n\n"
+        f"1️⃣ **اسم العملة:** `{data.get('coin_name', 'غير محدد')}`\n"
+        f"2️⃣ **الوصف:** `{data.get('coin_desc', 'غير محدد')}`\n"
+        f"3️⃣ **العقد (CA):** `{data.get('contract', 'غير محدد')}`\n"
+        f"4️⃣ **رابط الشراء:** {data.get('buy_link', 'غير محدد')}\n"
+        f"6️⃣ **عدد الرسائل/ساعة:** `{data.get('msg_per_hour', 2)}`\n"
+        f"7️⃣ **نسبة الروابط:** `{data.get('link_ratio', 100)}%`\n"
+        f"8️⃣ **تنبيهات الشراء:** `{'مفعلة' if data.get('enable_new_buy') else 'معطلة'}`\n\n"
+        "👇 **اختر الخيار الذي تريد تعديله مباشرة:**"
+    )
+
+    keyboard = [
+        [InlineKeyboardButton("🪙 تعديل اسم العملة", callback_data='opt_coin_name'), InlineKeyboardButton("📝 تعديل الوصف", callback_data='opt_coin_desc')],
+        [InlineKeyboardButton("📜 تعديل العقد (CA)", callback_data='opt_contract'), InlineKeyboardButton("🛒 تعديل رابط الشراء", callback_data='opt_buy_link')],
+        [InlineKeyboardButton("⏱️ عدد الرسائل/ساعة", callback_data='opt_msg_hour'), InlineKeyboardButton("📊 نسبة الروابط", callback_data='opt_ratio')],
+        [InlineKeyboardButton("🚀 تنبيهات الشراء", callback_data='opt_new_buy')],
+        [InlineKeyboardButton("🔄 تعديل شامل لجميع الخطوات", callback_data='opt_edit_all')],
+        [InlineKeyboardButton("✅ حفظ وإنهاء التعديل", callback_data='opt_save_finish')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+    else:
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+    return EDIT_OPTIONS_MENU
+
 async def select_channel_to_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -371,15 +405,51 @@ async def select_channel_to_edit(update: Update, context: ContextTypes.DEFAULT_T
 
     if channel_data:
         context.user_data.update(channel_data)
-        msg = (
-            f"✏️ **Editing settings for {channel_data['channel']}**\n\n"
-            f"1️⃣ Send your updated **Token / Coin Name** (Current: `{channel_data['coin_name']}`):"
-        )
-        await query.edit_message_text(msg, parse_mode='Markdown')
-        return COIN_NAME
+        context.user_data['is_editing'] = True
+        return await show_edit_options(update, context)
     else:
         await query.edit_message_text("❌ Channel config not found.", parse_mode='Markdown')
         return ConversationHandler.END
+
+async def edit_options_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    if data == 'opt_coin_name':
+        await query.edit_message_text("1️⃣ أدخل **اسم العملة الجديد** (مثل HIPPO):")
+        return COIN_NAME
+    elif data == 'opt_coin_desc':
+        await query.edit_message_text("2️⃣ أدخل **وصف العملة الجديد / النقاط المحفزة**:")
+        return COIN_DESC
+    elif data == 'opt_contract':
+        await query.edit_message_text("3️⃣ أدخل **عنوان العقد الجديد (CA)**:")
+        return CONTRACT
+    elif data == 'opt_buy_link':
+        await query.edit_message_text("4️⃣ أدخل **رابط الشراء أو DEXScreener الجديد**:")
+        return BUY_LINK
+    elif data == 'opt_msg_hour':
+        await query.edit_message_text("6️⃣ كم عدد الرسائل في الساعة؟ (أدخل رقماً من 1 إلى 20):")
+        return MSG_PER_HOUR
+    elif data == 'opt_ratio':
+        keyboard = [
+            [InlineKeyboardButton("0%", callback_data='ratio_0'), InlineKeyboardButton("25%", callback_data='ratio_25'), InlineKeyboardButton("50%", callback_data='ratio_50')],
+            [InlineKeyboardButton("75%", callback_data='ratio_75'), InlineKeyboardButton("100%", callback_data='ratio_100')]
+        ]
+        await query.edit_message_text("7️⃣ ما هي نسبة منشورات الشراء والعقد؟", reply_markup=InlineKeyboardMarkup(keyboard))
+        return LINK_RATIO
+    elif data == 'opt_new_buy':
+        keyboard = [
+            [InlineKeyboardButton("Yes 🚀 (تفعيل تنبيهات الشراء)", callback_data='newbuy_yes')],
+            [InlineKeyboardButton("No 🤖 (منشورات الذكاء الاصطناعي فقط)", callback_data='newbuy_no')]
+        ]
+        await query.edit_message_text("8️⃣ هل تريد تفعيل تنبيهات الشراء الوهمية؟", reply_markup=InlineKeyboardMarkup(keyboard))
+        return ENABLE_NEW_BUY
+    elif data == 'opt_edit_all':
+        await query.edit_message_text("1️⃣ أرسل **اسم العملة الجديد**:")
+        return COIN_NAME
+    elif data == 'opt_save_finish':
+        return await finish_setup(update, context)
 
 async def plan_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -387,6 +457,7 @@ async def plan_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     plan_key = query.data.replace('plan_', '')
     context.user_data['selected_plan'] = plan_key
+    context.user_data['is_editing'] = False
 
     msg = (
         "✅ **Subscription Activated (Test Mode Enabled)!**\n\n"
@@ -399,21 +470,34 @@ async def plan_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_coin_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['coin_name'] = update.message.text.strip()
+    if context.user_data.get('is_editing'):
+        return await show_edit_options(update, context)
     await update.message.reply_text("2️⃣ Send a brief **Description / Hype Points** for your token (used by AI to write posts):")
     return COIN_DESC
 
 async def get_coin_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['coin_desc'] = update.message.text.strip()
+    if context.user_data.get('is_editing'):
+        return await show_edit_options(update, context)
     await update.message.reply_text("3️⃣ Send your **Token Contract Address (CA)**:")
     return CONTRACT
 
 async def get_contract(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['contract'] = update.message.text.strip()
+    if context.user_data.get('is_editing'):
+        return await show_edit_options(update, context)
     await update.message.reply_text("4️⃣ Send your **DEXScreener or Buy Link**:")
     return BUY_LINK
 
+# --- دالة رابط الشراء المُصلحة بالكامل لتفادي التوقف ---
 async def get_buy_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['buy_link'] = update.message.text.strip()
+    
+    # حالة التعديل من خلال قائمة الأزرار أو تعديل قناة موجودة
+    if context.user_data.get('is_editing') or context.user_data.get('channel'):
+        return await show_edit_options(update, context)
+
+    # حالة إضافة قناة جديدة لأول مرة
     await update.message.reply_text(
         "5️⃣ Send your **Channel Username or Link** (e.g., `@mychannel` or `https://t.me/mychannel`):"
     )
@@ -477,6 +561,9 @@ async def get_msg_per_hour(update: Update, context: ContextTypes.DEFAULT_TYPE):
         count = 2
     context.user_data['msg_per_hour'] = count
 
+    if context.user_data.get('is_editing'):
+        return await show_edit_options(update, context)
+
     keyboard = [
         [
             InlineKeyboardButton("0%", callback_data='ratio_0'),
@@ -502,6 +589,9 @@ async def get_link_ratio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ratio = int(query.data.replace('ratio_', ''))
     context.user_data['link_ratio'] = ratio
 
+    if context.user_data.get('is_editing'):
+        return await show_edit_options(update, context)
+
     keyboard = [
         [
             InlineKeyboardButton("Yes 🚀 (Include Buy Alerts)", callback_data='newbuy_yes'),
@@ -516,25 +606,34 @@ async def get_link_ratio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ENABLE_NEW_BUY
 
 async def finish_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        if query.data.startswith('newbuy_'):
+            context.user_data['enable_new_buy'] = (query.data == 'newbuy_yes')
+        user_id = query.from_user.id
+        username = query.from_user.username or ""
+    else:
+        user_id = update.effective_user.id
+        username = update.effective_user.username or ""
     
-    context.user_data['enable_new_buy'] = (query.data == 'newbuy_yes')
     coin = context.user_data.get('coin_name')
     channel = context.user_data.get('channel')
-    user_id = query.from_user.id
-    username = query.from_user.username or ""
 
     # Save configuration to Supabase Database
     save_user_data(user_id, username, context.user_data)
     logging.info(f"User {user_id} channel {channel} saved to Supabase database.")
     
     msg = (
-        f"🎉 **Setup Complete for {coin} ({channel})!**\n\n"
+        f"🎉 **Setup / Update Complete for {coin} ({channel})!**\n\n"
         "⚡ Your auto-publisher is now active and live!\n"
         "You can modify these settings or add another channel anytime using `/start`."
     )
-    await query.edit_message_text(msg, parse_mode='Markdown')
+    
+    if update.callback_query:
+        await update.callback_query.edit_message_text(msg, parse_mode='Markdown')
+    else:
+        await update.message.reply_text(msg, parse_mode='Markdown')
     
     # Cancel any existing task for this channel before restarting
     if channel in ACTIVE_PUBLISH_TASKS:
@@ -544,6 +643,7 @@ async def finish_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     task = asyncio.create_task(start_publishing(context.application, context.user_data.copy()))
     ACTIVE_PUBLISH_TASKS[channel] = task
 
+    context.user_data['is_editing'] = False
     return ConversationHandler.END
 
 async def start_publishing(app, data):
@@ -584,6 +684,7 @@ async def start_publishing(app, data):
             break
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['is_editing'] = False
     await update.message.reply_text("Setup canceled. Send /start to open the main menu.")
     return ConversationHandler.END
 
@@ -606,6 +707,7 @@ if __name__ == '__main__':
         states={
             MAIN_MENU: [CallbackQueryHandler(main_menu_handler, pattern='^menu_')],
             EDIT_SELECT_CHANNEL: [CallbackQueryHandler(select_channel_to_edit, pattern='^edit_ch_')],
+            EDIT_OPTIONS_MENU: [CallbackQueryHandler(edit_options_handler, pattern='^opt_')],
             PLAN_SELECT: [CallbackQueryHandler(plan_selected, pattern='^plan_')],
             COIN_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_coin_name)],
             COIN_DESC: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_coin_desc)],
@@ -615,7 +717,10 @@ if __name__ == '__main__':
             VERIFY_ADMIN: [CallbackQueryHandler(verify_admin_status, pattern='^verify_admin$')],
             MSG_PER_HOUR: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_msg_per_hour)],
             LINK_RATIO: [CallbackQueryHandler(get_link_ratio, pattern='^ratio_')],
-            ENABLE_NEW_BUY: [CallbackQueryHandler(finish_setup, pattern='^newbuy_')],
+            ENABLE_NEW_BUY: [
+                CallbackQueryHandler(finish_setup, pattern='^newbuy_'),
+                CallbackQueryHandler(edit_options_handler, pattern='^opt_')
+            ],
         },
         fallbacks=[CommandHandler('cancel', cancel)],
     )
@@ -626,5 +731,5 @@ if __name__ == '__main__':
     loop = asyncio.get_event_loop()
     loop.create_task(restore_active_tasks(app))
 
-    print("DJANGO Bot with Admin Verification & Link Ratios is running...")
-    app.run_polling(drop_pending_updates=True)
+    print("DJANGO Bot with Interactive Edit Buttons & Fixes is running...")
+    app.run_polling(drop_pending_updates=True, stop_signals=None)
