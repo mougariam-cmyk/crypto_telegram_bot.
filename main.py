@@ -38,7 +38,6 @@ def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # 1. Create table if not exists
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id BIGINT,
@@ -57,7 +56,6 @@ def init_db():
         );
     ''')
     
-    # 2. Add link_ratio column if missing in existing table
     cursor.execute('''
         DO $$ 
         BEGIN 
@@ -75,9 +73,21 @@ def init_db():
     conn.close()
 
 def save_user_data(user_id: int, username: str, data: dict):
-    """Save or update user subscription & setup data based on (user_id, channel)."""
     conn = get_db_connection()
     cursor = conn.cursor()
+    
+    # التحقق مما إذا كانت القناة مسجلة مسبقاً ولديه خطة مدفوعة، لمنع الكتابة فوقها بالخطأ إذا لزم الأمر
+    cursor.execute('''
+        SELECT selected_plan FROM users WHERE user_id = %s AND channel = %s AND subscription_status = 'active';
+    ''', (user_id, data.get('channel', '')))
+    existing = cursor.fetchone()
+    
+    # إذا كانت القناة موجودة ولديه اشتراك مدفوع، ولا نريد للبوت أن يحولها لمجاني عن طريق الخطأ
+    target_plan = data.get('selected_plan', 'free')
+    if existing and existing[0] != 'free' and target_plan == 'free' and not data.get('is_editing'):
+        # الحفاظ على الخطة المدفوعة وعدم تغييرها إلى مجاني تلقائياً
+        target_plan = existing[0]
+
     cursor.execute('''
         INSERT INTO users (
             user_id, username, selected_plan, coin_name, coin_desc, 
@@ -97,7 +107,7 @@ def save_user_data(user_id: int, username: str, data: dict):
     ''', (
         user_id,
         username,
-        data.get('selected_plan', 'free'),
+        target_plan,
         data.get('coin_name', ''),
         data.get('coin_desc', ''),
         data.get('contract', ''),
@@ -112,7 +122,6 @@ def save_user_data(user_id: int, username: str, data: dict):
     conn.close()
 
 def cancel_user_subscription(user_id: int, channel: str):
-    """Update subscription status to 'cancelled' for a specific user & channel."""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
@@ -124,7 +133,6 @@ def cancel_user_subscription(user_id: int, channel: str):
     conn.close()
 
 def get_user_channels(user_id: int):
-    """Retrieve all channels configured by a specific user."""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
@@ -136,7 +144,6 @@ def get_user_channels(user_id: int):
     return rows
 
 def get_user_channel_data(user_id: int, channel: str):
-    """Retrieve full configuration data for a specific channel of a user."""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
@@ -162,7 +169,6 @@ def get_user_channel_data(user_id: int, channel: str):
     return None
 
 def get_active_users():
-    """Retrieve all active users from Supabase to restore background publishing on restart."""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
@@ -189,10 +195,8 @@ def get_active_users():
         })
     return users_data
 
-# Initialize Database Table on startup
 init_db()
 
-# Lightweight Web Server for Render Health Check (24/7 Live)
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -210,17 +214,14 @@ def run_health_check_server():
 
 threading.Thread(target=run_health_check_server, daemon=True).start()
 
-# Conversation States
 (
     MAIN_MENU, PLAN_SELECT, COIN_NAME, COIN_DESC, CONTRACT, 
     BUY_LINK, CHANNEL, VERIFY_ADMIN, MSG_PER_HOUR, LINK_RATIO, ENABLE_NEW_BUY, 
     EDIT_SELECT_CHANNEL, EDIT_OPTIONS_MENU, CONFIRM_CANCEL_SUB
 ) = range(14)
 
-# Global dictionary to track active publishing asyncio tasks by channel_id
 ACTIVE_PUBLISH_TASKS = {}
 
-# Hype & Buy Templates
 BUY_TEMPLATES = [
     "🚀 **NEW BUY DETECTED!** 🚀\n\n💎 **Token:** {coin_name}\n💰 **Amount:** ${amount}\n🛒 **Buy Here:** {buy_link}\n📜 **Contract:** `{contract}`\n\n🔥 Whales are accumulating!",
     "📈 **GREEN CANDLE ALERT!** 📈\n\nNew buy order executed: **${amount}** on {coin_name}! 🔥\n🛒 **DEXScreener:** {buy_link}\n📜 **Contract:** `{contract}`",
@@ -234,7 +235,6 @@ COMMUNITY_TEMPLATES = [
     "🌙 **GN to all {coin_name} believers!** Big things are coming tomorrow! ✨"
 ]
 
-# Free Plan Ad Footer & Buttons
 FREE_PLAN_AD_TEXT = "\n\n🤖 *Powered by Django AI — Affordable AI tools for your crypto project!*"
 
 FREE_PLAN_FOOTER_BUTTONS = InlineKeyboardMarkup([
@@ -247,11 +247,10 @@ FREE_PLAN_FOOTER_BUTTONS = InlineKeyboardMarkup([
 ])
 
 def parse_channel_input(user_input: str) -> str:
-    """Helper to sanitize and format channel username, link or ID."""
     clean_input = user_input.strip()
     if clean_input.startswith("https://t.me/"):
         channel_name = clean_input.replace("https://t.me/", "")
-        if channel_name.startswith("+") or "joinchat" in channel_name:
+        if clean_input.startswith("+") or "joinchat" in channel_name:
             return clean_input
         return f"@{channel_name.split('/')[0]}"
     elif clean_input.startswith("http://t.me/"):
@@ -262,10 +261,8 @@ def parse_channel_input(user_input: str) -> str:
     return clean_input
 
 def generate_ai_post(data, include_links=True):
-    """Generate high-energy promo post via Gemini AI, optionally with links/contract."""
     try:
         if not GEMINI_API_KEY:
-            logging.warning("GEMINI_API_KEY is missing! Using fallback message.")
             return get_fallback_message(data)
             
         client = genai.Client(api_key=GEMINI_API_KEY)
@@ -298,15 +295,13 @@ Keep it concise, hype-driven, interactive, and under 4 lines. Output in English 
         if response and response.text:
             return response.text
         else:
-            logging.warning("Gemini returned an empty response. Falling back to database.")
             return get_fallback_message(data)
 
     except Exception as e:
-        logging.error(f"Gemini API Error details: {type(e).__name__} - {e}")
+        logging.error(f"Gemini API Error: {e}")
         return get_fallback_message(data)
 
 def generate_post(data):
-    """Generate a post adhering strictly to the user's configured link_ratio percentage."""
     link_ratio = data.get('link_ratio', 100) / 100.0
     should_include_links = (random.random() < link_ratio)
 
@@ -328,18 +323,12 @@ def generate_post(data):
         else:
             post_text = generate_ai_post(data, include_links=True)
 
-    # Attach Ad Footer if user is on Free Plan
     if data.get('selected_plan') == 'free':
         post_text += FREE_PLAN_AD_TEXT
 
     return post_text
 
-# ==========================================
-# BOT HANDLERS & WORKFLOW
-# ==========================================
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Entry point: Displays Main Menu for existing users or Plan Selection for new ones."""
     user_id = update.effective_user.id
     channels = get_user_channels(user_id)
 
@@ -363,7 +352,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await show_subscription_plans(update, context)
 
 async def show_subscription_plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()  # Clear temporary data for clean setup
+    context.user_data.clear()
     welcome_msg = (
         "🤖 **Welcome to DJANGO Crypto Auto-Promoter Bot!**\n\n"
         "Boost your crypto channel & group engagement with AI-generated hype posts, "
@@ -484,8 +473,7 @@ async def edit_options_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             [InlineKeyboardButton("75%", callback_data='ratio_75'), InlineKeyboardButton("100%", callback_data='ratio_100')]
         ]
         await query.edit_message_text(
-            "7️⃣ Select the percentage of posts that should include **Buy Links & Contract Address**:\n"
-            "(e.g., 50% = half of the posts will have links, and half will be engagement/community posts without links)", 
+            "7️⃣ Select the percentage of posts that should include **Buy Links & Contract Address**:", 
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return LINK_RATIO
@@ -507,8 +495,7 @@ async def edit_options_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             [InlineKeyboardButton("NO, Keep Publishing 🚀", callback_data='confirm_cancel_no')]
         ]
         await query.edit_message_text(
-            f"⚠️ **Are you sure you want to cancel your campaign for {channel}?**\n\n"
-            "This will immediately stop all automatic posting in this channel.",
+            f"⚠️ **Are you sure you want to cancel your campaign for {channel}?**",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
         )
@@ -531,9 +518,7 @@ async def confirm_cancel_sub_handler(update: Update, context: ContextTypes.DEFAU
             del ACTIVE_PUBLISH_TASKS[channel]
 
         await query.edit_message_text(
-            f"🛑 **Subscription Cancelled!**\n\n"
-            f"Auto-publishing for channel `{channel}` has been permanently stopped.\n"
-            "You can start a new campaign anytime by typing `/start`.",
+            f"🛑 **Subscription Cancelled!**\nAuto-publishing for channel `{channel}` has been stopped.",
             parse_mode='Markdown'
         )
         return ConversationHandler.END
@@ -548,20 +533,11 @@ async def plan_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['selected_plan'] = plan_key
     context.user_data['is_editing'] = False
 
-    if plan_key == 'free':
-        msg = (
-            "🎁 **Free Plan Activated!**\n"
-            "• Includes 4 posts per day.\n"
-            "• Adds Django AI promo footer & buttons to posts.\n\n"
-            "⚙️ **Let's configure your bot settings.**\n\n"
-            "1️⃣ Send your **Token / Coin Name** (e.g., HIPPO):"
-        )
-    else:
-        msg = (
-            "✅ **Subscription Activated (Test Mode Enabled)!**\n\n"
-            "⚙️ **Let's configure your bot settings.**\n\n"
-            "1️⃣ Send your **Token / Coin Name** (e.g., HIPPO):"
-        )
+    msg = (
+        f"✅ **Plan Selected: {plan_key.upper()}**\n\n"
+        "⚙️ **Let's configure your bot settings.**\n\n"
+        "1️⃣ Send your **Token / Coin Name** (e.g., HIPPO):"
+    )
     
     await query.edit_message_text(msg, parse_mode='Markdown')
     return COIN_NAME
@@ -570,7 +546,7 @@ async def get_coin_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['coin_name'] = update.message.text.strip()
     if context.user_data.get('is_editing'):
         return await show_edit_options(update, context)
-    await update.message.reply_text("2️⃣ Send a brief **Description / Hype Points** for your token (used by AI to write posts):")
+    await update.message.reply_text("2️⃣ Send a brief **Description / Hype Points** for your token:")
     return COIN_DESC
 
 async def get_coin_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -590,7 +566,6 @@ async def get_contract(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def get_buy_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['buy_link'] = update.message.text.strip()
     
-    # تحويل فقط إذا كان المستخدم ينفّذ تعديلاً فرعياً متعمداً
     if context.user_data.get('is_editing'):
         return await show_edit_options(update, context)
 
@@ -602,6 +577,18 @@ async def get_buy_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def get_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raw_channel = update.message.text.strip()
     formatted_channel = parse_channel_input(raw_channel)
+    user_id = update.effective_user.id
+
+    # 🛑 حماية القنوات المدفوعة: التحقق مما إذا كانت القناة مسجلة مسبقاً باشتراك مدفوع نشط
+    existing_data = get_user_channel_data(user_id, formatted_channel)
+    if existing_data and existing_data['selected_plan'] != 'free' and context.user_data.get('selected_plan') == 'free':
+        # إذا حاول المستخدم إدخال قناة لديها اشتراك مدفوع في الخطة المجانية، نقوم بالاحتفاظ باشتراكه المدفوع منعاً لإلغائه
+        context.user_data['selected_plan'] = existing_data['selected_plan']
+        await update.message.reply_text(
+            f"ℹ️ **Notice:** This channel (`{formatted_channel}`) already has an active **{existing_data['selected_plan'].upper()}** subscription. "
+            "Your paid subscription has been safely preserved and will not be overwritten by the free plan!"
+        )
+
     context.user_data['channel'] = formatted_channel
 
     msg = (
@@ -641,7 +628,6 @@ async def verify_admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE
                 ]
                 await query.edit_message_text(
                     "✅ **Admin Status Verified!**\n\n"
-                    "ℹ️ *Free Plan automatically set to 4 posts/day (1 post every 6 hours).*\n\n"
                     "7️⃣ What percentage of posts should contain **Buy Links & Contract Address**?",
                     reply_markup=InlineKeyboardMarkup(keyboard),
                     parse_mode='Markdown'
@@ -655,27 +641,18 @@ async def verify_admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
             return MSG_PER_HOUR
         else:
-            await query.answer(
-                "❌ Bot is in the chat but not promoted to Admin yet! Please give it Administrator permissions.", 
-                show_alert=True
-            )
+            await query.answer("❌ Bot is not promoted to Admin yet!", show_alert=True)
             return VERIFY_ADMIN
 
     except Exception as e:
-        logging.error(f"Admin verification failed for {channel_id}: {e}")
-        await query.answer(
-            f"❌ Unable to verify! Ensure the bot is added to {channel_id} and promoted to Admin.", 
-            show_alert=True
-        )
+        logging.error(f"Admin verification failed: {e}")
+        await query.answer("❌ Unable to verify! Ensure the bot is added as Admin.", show_alert=True)
         return VERIFY_ADMIN
 
 async def get_msg_per_hour(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         count = int(update.message.text.strip())
-        if count < 1: 
-            count = 1
-        if count > 20: 
-            count = 20
+        count = max(1, min(20, count))
     except ValueError:
         count = 2
     context.user_data['msg_per_hour'] = count
@@ -719,7 +696,7 @@ async def get_link_ratio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(
-        "8️⃣ Would you like to enable **Simulated New Buy Alerts** (30% chance per post)?", 
+        "8️⃣ Would you like to enable **Simulated New Buy Alerts**?", 
         reply_markup=reply_markup
     )
     return ENABLE_NEW_BUY
@@ -736,14 +713,12 @@ async def finish_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         username = update.effective_user.username or ""
     
-    coin = context.user_data.get('coin_name')
     channel = context.user_data.get('channel')
 
-    # Save configuration to Supabase Database
+    # حفظ البيانات مع الحماية ضد استبدال المدفوع بالمجاني
     save_user_data(user_id, username, context.user_data)
-    logging.info(f"User {user_id} channel {channel} saved to Supabase database.")
     
-    # إظهار إشعار إكمال الإعدادات أولاً ثم فتح نافذة التعديلات التلقائية
+    # فتح نافذة التعديلات تلقائياً بعد الانتهاء
     await show_edit_options(update, context)
     
     if channel in ACTIVE_PUBLISH_TASKS:
@@ -766,31 +741,18 @@ async def start_publishing(app, data):
         
     channel_id = str(data.get('channel', '')).strip()
     
-    logging.info(f"Starting auto-publisher for {channel_id} [{plan.upper()}] with interval {delay_seconds}s")
-
     while True:
         try:
             post_text = generate_post(data)
             reply_markup = FREE_PLAN_FOOTER_BUTTONS if plan == 'free' else None
 
-            try:
-                await app.bot.send_message(
-                    chat_id=channel_id, 
-                    text=post_text, 
-                    parse_mode='Markdown',
-                    reply_markup=reply_markup
-                )
-            except Exception as parse_err:
-                logging.warning(f"Markdown parse error, sending plain text: {parse_err}")
-                await app.bot.send_message(
-                    chat_id=channel_id, 
-                    text=post_text,
-                    reply_markup=reply_markup
-                )
-
-            logging.info(f"Post successfully sent for {data['coin_name']} to {channel_id}")
+            await app.bot.send_message(
+                chat_id=channel_id, 
+                text=post_text, 
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
         except asyncio.CancelledError:
-            logging.info(f"Publishing task for {channel_id} was gracefully cancelled.")
             break
         except Exception as e:
             logging.error(f"Failed to send post to channel {channel_id}: {e}")
@@ -798,7 +760,6 @@ async def start_publishing(app, data):
         try:
             await asyncio.sleep(delay_seconds)
         except asyncio.CancelledError:
-            logging.info(f"Sleep interrupted. Stopping loop for {channel_id}.")
             break
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -808,7 +769,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def restore_active_tasks(app):
     users = get_active_users()
-    logging.info(f"Restoring {len(users)} active auto-publisher tasks from Supabase database...")
     for user_data in users:
         channel = user_data.get('channel')
         if channel in ACTIVE_PUBLISH_TASKS:
@@ -848,5 +808,5 @@ if __name__ == '__main__':
     loop = asyncio.get_event_loop()
     loop.create_task(restore_active_tasks(app))
 
-    print("DJANGO Bot running with fixed setup flow...")
+    print("DJANGO Bot running...")
     app.run_polling(drop_pending_updates=True, stop_signals=None)
