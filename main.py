@@ -363,6 +363,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await show_subscription_plans(update, context)
 
 async def show_subscription_plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()  # Clear temporary data for clean setup
     welcome_msg = (
         "🤖 **Welcome to DJANGO Crypto Auto-Promoter Bot!**\n\n"
         "Boost your crypto channel & group engagement with AI-generated hype posts, "
@@ -401,7 +402,6 @@ async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⚙️ **Select the channel you want to edit:**", reply_markup=reply_markup, parse_mode='Markdown')
         return EDIT_SELECT_CHANNEL
 
-# --- Interactive Edit Menu Options (English) ---
 async def show_edit_options(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = context.user_data
     channel = data.get('channel', 'Channel')
@@ -497,6 +497,7 @@ async def edit_options_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text("8️⃣ Would you like to enable **Simulated New Buy Alerts**?", reply_markup=InlineKeyboardMarkup(keyboard))
         return ENABLE_NEW_BUY
     elif data == 'opt_edit_all':
+        context.user_data['is_editing'] = False
         await query.edit_message_text("1️⃣ Send your new **Token / Coin Name**:")
         return COIN_NAME
     elif data == 'opt_cancel_sub':
@@ -523,10 +524,8 @@ async def confirm_cancel_sub_handler(update: Update, context: ContextTypes.DEFAU
         user_id = query.from_user.id
         channel = context.user_data.get('channel')
 
-        # 1. Update status in database
         cancel_user_subscription(user_id, channel)
 
-        # 2. Stop active publisher task immediately
         if channel in ACTIVE_PUBLISH_TASKS:
             ACTIVE_PUBLISH_TASKS[channel].cancel()
             del ACTIVE_PUBLISH_TASKS[channel]
@@ -591,7 +590,8 @@ async def get_contract(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def get_buy_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['buy_link'] = update.message.text.strip()
     
-    if context.user_data.get('is_editing') or context.user_data.get('channel'):
+    # تحويل فقط إذا كان المستخدم ينفّذ تعديلاً فرعياً متعمداً
+    if context.user_data.get('is_editing'):
         return await show_edit_options(update, context)
 
     await update.message.reply_text(
@@ -625,9 +625,8 @@ async def verify_admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE
         if member.status in ['administrator', 'creator']:
             await query.answer("✅ Admin status verified successfully!", show_alert=True)
             
-            # If Free plan, automatically enforce 4 posts/day limit and skip manual input
             if context.user_data.get('selected_plan') == 'free':
-                context.user_data['msg_per_hour'] = 4  # Represents 4 posts/day in free mode
+                context.user_data['msg_per_hour'] = 4
                 
                 keyboard = [
                     [
@@ -744,33 +743,22 @@ async def finish_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_user_data(user_id, username, context.user_data)
     logging.info(f"User {user_id} channel {channel} saved to Supabase database.")
     
-    msg = (
-        f"🎉 **Setup / Update Complete for {coin} ({channel})!**\n\n"
-        "⚡ Your auto-publisher is now active and live!\n"
-        "You can modify these settings or add another channel anytime using `/start`."
-    )
+    # إظهار إشعار إكمال الإعدادات أولاً ثم فتح نافذة التعديلات التلقائية
+    await show_edit_options(update, context)
     
-    if update.callback_query:
-        await update.callback_query.edit_message_text(msg, parse_mode='Markdown')
-    else:
-        await update.message.reply_text(msg, parse_mode='Markdown')
-    
-    # Cancel any existing task for this channel before restarting
     if channel in ACTIVE_PUBLISH_TASKS:
         ACTIVE_PUBLISH_TASKS[channel].cancel()
 
-    # Start new auto-publishing loop as background task
     task = asyncio.create_task(start_publishing(context.application, context.user_data.copy()))
     ACTIVE_PUBLISH_TASKS[channel] = task
 
-    context.user_data['is_editing'] = False
-    return ConversationHandler.END
+    context.user_data['is_editing'] = True
+    return EDIT_OPTIONS_MENU
 
 async def start_publishing(app, data):
     plan = data.get('selected_plan', 'free')
     
     if plan == 'free':
-        # 4 posts per day = 1 post every 6 hours (21,600 seconds)
         delay_seconds = 21600
     else:
         msg_per_hour = data.get('msg_per_hour', 2)
@@ -783,8 +771,6 @@ async def start_publishing(app, data):
     while True:
         try:
             post_text = generate_post(data)
-
-            # Free Plan includes ad footer + 4 inline buttons
             reply_markup = FREE_PLAN_FOOTER_BUTTONS if plan == 'free' else None
 
             try:
@@ -820,7 +806,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Setup canceled. Send /start to open the main menu.")
     return ConversationHandler.END
 
-# Restore background publisher tasks for all users from DB upon bot startup
 async def restore_active_tasks(app):
     users = get_active_users()
     logging.info(f"Restoring {len(users)} active auto-publisher tasks from Supabase database...")
@@ -860,9 +845,8 @@ if __name__ == '__main__':
 
     app.add_handler(conv_handler)
     
-    # Restore saved campaigns on startup
     loop = asyncio.get_event_loop()
     loop.create_task(restore_active_tasks(app))
 
-    print("DJANGO Bot running with Free Plan and Subscription Cancel feature...")
+    print("DJANGO Bot running with fixed setup flow...")
     app.run_polling(drop_pending_updates=True, stop_signals=None)
