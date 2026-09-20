@@ -89,7 +89,7 @@ def save_user_data(user_id: int, username: str, data: dict):
     ''', (
         user_id,
         username,
-        data.get('selected_plan', ''),
+        data.get('selected_plan', 'free'),
         data.get('coin_name', ''),
         data.get('coin_desc', ''),
         data.get('contract', ''),
@@ -214,6 +214,18 @@ COMMUNITY_TEMPLATES = [
     "🌙 **GN to all {coin_name} believers!** Big things are coming tomorrow! ✨"
 ]
 
+# Free Plan Ad Footer & Buttons
+FREE_PLAN_AD_TEXT = "\n\n🤖 *Powered by Django AI — Affordable AI tools for your crypto project!*"
+
+FREE_PLAN_FOOTER_BUTTONS = InlineKeyboardMarkup([
+    [
+        InlineKeyboardButton("📢 Telegram", url="https://t.me/django_ai"),
+        InlineKeyboardButton("🐦 Twitter", url="https://x.com/django_ai"),
+        InlineKeyboardButton("🌐 Website", url="https://django.ai"),
+        InlineKeyboardButton("🤖 Bot", url="https://t.me/django_promoter_bot")
+    ]
+])
+
 def parse_channel_input(user_input: str) -> str:
     """Helper to sanitize and format channel username, link or ID."""
     clean_input = user_input.strip()
@@ -280,21 +292,27 @@ def generate_post(data):
 
     if not should_include_links:
         template = random.choice(COMMUNITY_TEMPLATES)
-        return template.format(coin_name=data['coin_name'])
-    
-    enable_buy = data.get('enable_new_buy', False)
-    if enable_buy and random.random() < 0.50:
-        amount = random.randint(50, 1500)
-        template = random.choice(BUY_TEMPLATES)
-        return template.format(
-            coin_name=data['coin_name'],
-            buy_link=data['buy_link'],
-            contract=data['contract'],
-            channel=data['channel'],
-            amount=amount
-        )
-    
-    return generate_ai_post(data, include_links=True)
+        post_text = template.format(coin_name=data['coin_name'])
+    else:
+        enable_buy = data.get('enable_new_buy', False)
+        if enable_buy and random.random() < 0.50:
+            amount = random.randint(50, 1500)
+            template = random.choice(BUY_TEMPLATES)
+            post_text = template.format(
+                coin_name=data['coin_name'],
+                buy_link=data['buy_link'],
+                contract=data['contract'],
+                channel=data['channel'],
+                amount=amount
+            )
+        else:
+            post_text = generate_ai_post(data, include_links=True)
+
+    # Attach Ad Footer if user is on Free Plan
+    if data.get('selected_plan') == 'free':
+        post_text += FREE_PLAN_AD_TEXT
+
+    return post_text
 
 # ==========================================
 # BOT HANDLERS & WORKFLOW
@@ -329,9 +347,10 @@ async def show_subscription_plans(update: Update, context: ContextTypes.DEFAULT_
         "🤖 **Welcome to DJANGO Crypto Auto-Promoter Bot!**\n\n"
         "Boost your crypto channel & group engagement with AI-generated hype posts, "
         "simulated whale buys, and custom promotional schedules.\n\n"
-        "💰 **Select a Subscription Plan to Activate:**"
+        "💰 **Select a Plan to Activate:**"
     )
     keyboard = [
+        [InlineKeyboardButton("🎁 Free Plan (4 Posts/Day)", callback_data='plan_free')],
         [InlineKeyboardButton("💎 1 Month ($10 TON)", callback_data='plan_1_month')],
         [InlineKeyboardButton("💎 6 Months ($50 TON)", callback_data='plan_6_months')],
         [InlineKeyboardButton("💎 12 Months ($80 TON)", callback_data='plan_12_months')]
@@ -366,14 +385,18 @@ async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_edit_options(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = context.user_data
     channel = data.get('channel', 'Channel')
+    plan = data.get('selected_plan', 'free')
     
+    posts_freq = "4 Posts/Day (Fixed)" if plan == 'free' else f"{data.get('msg_per_hour', 2)}/hour"
+
     text = (
         f"⚙️ **Current Settings for {channel}:**\n\n"
+        f"💳 **Plan:** `{plan.upper()}`\n"
         f"1️⃣ **Coin Name:** `{data.get('coin_name', 'Not set')}`\n"
         f"2️⃣ **Description:** `{data.get('coin_desc', 'Not set')}`\n"
         f"3️⃣ **Contract (CA):** `{data.get('contract', 'Not set')}`\n"
         f"4️⃣ **Buy Link:** {data.get('buy_link', 'Not set')}\n"
-        f"6️⃣ **Posts per Hour:** `{data.get('msg_per_hour', 2)}`\n"
+        f"6️⃣ **Posts Frequency:** `{posts_freq}`\n"
         f"7️⃣ **Posts with Links Ratio:** `{data.get('link_ratio', 100)}%`\n"
         f"8️⃣ **Simulated Buy Alerts:** `{'Enabled' if data.get('enable_new_buy') else 'Disabled'}`\n\n"
         "👇 **Select an option below to update:**"
@@ -382,7 +405,7 @@ async def show_edit_options(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🪙 Edit Coin Name", callback_data='opt_coin_name'), InlineKeyboardButton("📝 Edit Description", callback_data='opt_coin_desc')],
         [InlineKeyboardButton("📜 Edit Contract (CA)", callback_data='opt_contract'), InlineKeyboardButton("🛒 Edit Buy Link", callback_data='opt_buy_link')],
-        [InlineKeyboardButton("⏱️ Posts / Hour", callback_data='opt_msg_hour'), InlineKeyboardButton("📊 Posts with Links Ratio", callback_data='opt_ratio')],
+        [InlineKeyboardButton("⏱️ Posts Frequency", callback_data='opt_msg_hour'), InlineKeyboardButton("📊 Posts with Links Ratio", callback_data='opt_ratio')],
         [InlineKeyboardButton("🚀 Buy Alerts Toggle", callback_data='opt_new_buy')],
         [InlineKeyboardButton("🔄 Re-configure All Settings Step-by-Step", callback_data='opt_edit_all')],
         [InlineKeyboardButton("✅ Save & Exit Settings", callback_data='opt_save_finish')]
@@ -429,6 +452,9 @@ async def edit_options_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text("4️⃣ Send your new **DEXScreener or Buy Link**:")
         return BUY_LINK
     elif data == 'opt_msg_hour':
+        if context.user_data.get('selected_plan') == 'free':
+            await query.answer("⚠️ Free Plan is restricted to 4 posts/day maximum. Upgrade to Premium to customize frequency!", show_alert=True)
+            return EDIT_OPTIONS_MENU
         await query.edit_message_text("6️⃣ How many posts per hour do you want? (Enter a number from 1 to 20):")
         return MSG_PER_HOUR
     elif data == 'opt_ratio':
@@ -463,11 +489,20 @@ async def plan_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['selected_plan'] = plan_key
     context.user_data['is_editing'] = False
 
-    msg = (
-        "✅ **Subscription Activated (Test Mode Enabled)!**\n\n"
-        "⚙️ **Let's configure your bot settings.**\n\n"
-        "1️⃣ Send your **Token / Coin Name** (e.g., HIPPO):"
-    )
+    if plan_key == 'free':
+        msg = (
+            "🎁 **Free Plan Activated!**\n"
+            "• Includes 4 posts per day.\n"
+            "• Adds Django AI promo footer & buttons to posts.\n\n"
+            "⚙️ **Let's configure your bot settings.**\n\n"
+            "1️⃣ Send your **Token / Coin Name** (e.g., HIPPO):"
+        )
+    else:
+        msg = (
+            "✅ **Subscription Activated (Test Mode Enabled)!**\n\n"
+            "⚙️ **Let's configure your bot settings.**\n\n"
+            "1️⃣ Send your **Token / Coin Name** (e.g., HIPPO):"
+        )
     
     await query.edit_message_text(msg, parse_mode='Markdown')
     return COIN_NAME
@@ -530,6 +565,30 @@ async def verify_admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE
         if member.status in ['administrator', 'creator']:
             await query.answer("✅ Admin status verified successfully!", show_alert=True)
             
+            # If Free plan, automatically enforce 4 posts/day limit and skip manual input
+            if context.user_data.get('selected_plan') == 'free':
+                context.user_data['msg_per_hour'] = 4  # Represents 4 posts/day in free mode
+                
+                keyboard = [
+                    [
+                        InlineKeyboardButton("0%", callback_data='ratio_0'),
+                        InlineKeyboardButton("25%", callback_data='ratio_25'),
+                        InlineKeyboardButton("50%", callback_data='ratio_50'),
+                    ],
+                    [
+                        InlineKeyboardButton("75%", callback_data='ratio_75'),
+                        InlineKeyboardButton("100%", callback_data='ratio_100')
+                    ]
+                ]
+                await query.edit_message_text(
+                    "✅ **Admin Status Verified!**\n\n"
+                    "ℹ️ *Free Plan automatically set to 4 posts/day (1 post every 6 hours).*\n\n"
+                    "7️⃣ What percentage of posts should contain **Buy Links & Contract Address**?",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode='Markdown'
+                )
+                return LINK_RATIO
+
             await query.edit_message_text(
                 "✅ **Admin Status Verified!**\n\n"
                 "6️⃣ How many posts per hour do you want? (Enter a number from 1 to 20):",
@@ -648,27 +707,39 @@ async def finish_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def start_publishing(app, data):
-    msg_per_hour = data.get('msg_per_hour', 2)
-    delay_seconds = int((60 / msg_per_hour) * 60)
+    plan = data.get('selected_plan', 'free')
+    
+    if plan == 'free':
+        # 4 posts per day = 1 post every 6 hours (21,600 seconds)
+        delay_seconds = 21600
+    else:
+        msg_per_hour = data.get('msg_per_hour', 2)
+        delay_seconds = int((60 / msg_per_hour) * 60)
+        
     channel_id = str(data.get('channel', '')).strip()
     
-    logging.info(f"Starting auto-publisher for {channel_id} with interval {delay_seconds}s")
+    logging.info(f"Starting auto-publisher for {channel_id} [{plan.upper()}] with interval {delay_seconds}s")
 
     while True:
         try:
             post_text = generate_post(data)
 
+            # Free Plan includes ad footer + 4 inline buttons
+            reply_markup = FREE_PLAN_FOOTER_BUTTONS if plan == 'free' else None
+
             try:
                 await app.bot.send_message(
                     chat_id=channel_id, 
                     text=post_text, 
-                    parse_mode='Markdown'
+                    parse_mode='Markdown',
+                    reply_markup=reply_markup
                 )
             except Exception as parse_err:
                 logging.warning(f"Markdown parse error, sending plain text: {parse_err}")
                 await app.bot.send_message(
                     chat_id=channel_id, 
-                    text=post_text
+                    text=post_text,
+                    reply_markup=reply_markup
                 )
 
             logging.info(f"Post successfully sent for {data['coin_name']} to {channel_id}")
@@ -732,5 +803,5 @@ if __name__ == '__main__':
     loop = asyncio.get_event_loop()
     loop.create_task(restore_active_tasks(app))
 
-    print("DJANGO Bot is running with updated English interface...")
+    print("DJANGO Bot running with Free Plan support...")
     app.run_polling(drop_pending_updates=True, stop_signals=None)
