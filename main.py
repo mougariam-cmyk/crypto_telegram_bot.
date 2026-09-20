@@ -38,7 +38,7 @@ def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # 1. إنشاء الجدول إن لم يكن موجوداً
+    # 1. Create table if not exists
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id BIGINT,
@@ -57,7 +57,7 @@ def init_db():
         );
     ''')
     
-    # 2. إضافة عمود link_ratio للجدول القديم تلقائياً إن كان غائباً
+    # 2. Add link_ratio column if missing in existing table
     cursor.execute('''
         DO $$          BEGIN              IF NOT EXISTS (                 SELECT 1 FROM information_schema.columns                  WHERE table_name='users' AND column_name='link_ratio'             ) THEN                  ALTER TABLE users ADD COLUMN link_ratio INTEGER DEFAULT 100;              END IF;          END $$;
     ''')
@@ -362,30 +362,30 @@ async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⚙️ **Select the channel you want to edit:**", reply_markup=reply_markup, parse_mode='Markdown')
         return EDIT_SELECT_CHANNEL
 
-# --- عرض أزرار التعديل التفاعلية ---
+# --- Interactive Edit Menu Options (English) ---
 async def show_edit_options(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = context.user_data
-    channel = data.get('channel', 'القناة')
+    channel = data.get('channel', 'Channel')
     
     text = (
-        f"⚙️ **إعدادات القناة الحالية لـ {channel}:**\n\n"
-        f"1️⃣ **اسم العملة:** `{data.get('coin_name', 'غير محدد')}`\n"
-        f"2️⃣ **الوصف:** `{data.get('coin_desc', 'غير محدد')}`\n"
-        f"3️⃣ **العقد (CA):** `{data.get('contract', 'غير محدد')}`\n"
-        f"4️⃣ **رابط الشراء:** {data.get('buy_link', 'غير محدد')}\n"
-        f"6️⃣ **عدد الرسائل/ساعة:** `{data.get('msg_per_hour', 2)}`\n"
-        f"7️⃣ **نسبة الروابط:** `{data.get('link_ratio', 100)}%`\n"
-        f"8️⃣ **تنبيهات الشراء:** `{'مفعلة' if data.get('enable_new_buy') else 'معطلة'}`\n\n"
-        "👇 **اختر الخيار الذي تريد تعديله مباشرة:**"
+        f"⚙️ **Current Settings for {channel}:**\n\n"
+        f"1️⃣ **Coin Name:** `{data.get('coin_name', 'Not set')}`\n"
+        f"2️⃣ **Description:** `{data.get('coin_desc', 'Not set')}`\n"
+        f"3️⃣ **Contract (CA):** `{data.get('contract', 'Not set')}`\n"
+        f"4️⃣ **Buy Link:** {data.get('buy_link', 'Not set')}\n"
+        f"6️⃣ **Posts per Hour:** `{data.get('msg_per_hour', 2)}`\n"
+        f"7️⃣ **Posts with Links Ratio:** `{data.get('link_ratio', 100)}%`\n"
+        f"8️⃣ **Simulated Buy Alerts:** `{'Enabled' if data.get('enable_new_buy') else 'Disabled'}`\n\n"
+        "👇 **Select an option below to update:**"
     )
 
     keyboard = [
-        [InlineKeyboardButton("🪙 تعديل اسم العملة", callback_data='opt_coin_name'), InlineKeyboardButton("📝 تعديل الوصف", callback_data='opt_coin_desc')],
-        [InlineKeyboardButton("📜 تعديل العقد (CA)", callback_data='opt_contract'), InlineKeyboardButton("🛒 تعديل رابط الشراء", callback_data='opt_buy_link')],
-        [InlineKeyboardButton("⏱️ عدد الرسائل/ساعة", callback_data='opt_msg_hour'), InlineKeyboardButton("📊 نسبة الروابط", callback_data='opt_ratio')],
-        [InlineKeyboardButton("🚀 تنبيهات الشراء", callback_data='opt_new_buy')],
-        [InlineKeyboardButton("🔄 تعديل شامل لجميع الخطوات", callback_data='opt_edit_all')],
-        [InlineKeyboardButton("✅ حفظ وإنهاء التعديل", callback_data='opt_save_finish')]
+        [InlineKeyboardButton("🪙 Edit Coin Name", callback_data='opt_coin_name'), InlineKeyboardButton("📝 Edit Description", callback_data='opt_coin_desc')],
+        [InlineKeyboardButton("📜 Edit Contract (CA)", callback_data='opt_contract'), InlineKeyboardButton("🛒 Edit Buy Link", callback_data='opt_buy_link')],
+        [InlineKeyboardButton("⏱️ Posts / Hour", callback_data='opt_msg_hour'), InlineKeyboardButton("📊 Posts with Links Ratio", callback_data='opt_ratio')],
+        [InlineKeyboardButton("🚀 Buy Alerts Toggle", callback_data='opt_new_buy')],
+        [InlineKeyboardButton("🔄 Re-configure All Settings Step-by-Step", callback_data='opt_edit_all')],
+        [InlineKeyboardButton("✅ Save & Exit Settings", callback_data='opt_save_finish')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -417,36 +417,40 @@ async def edit_options_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     data = query.data
 
     if data == 'opt_coin_name':
-        await query.edit_message_text("1️⃣ أدخل **اسم العملة الجديد** (مثل HIPPO):")
+        await query.edit_message_text("1️⃣ Send your new **Token / Coin Name** (e.g., HIPPO):")
         return COIN_NAME
     elif data == 'opt_coin_desc':
-        await query.edit_message_text("2️⃣ أدخل **وصف العملة الجديد / النقاط المحفزة**:")
+        await query.edit_message_text("2️⃣ Send a new **Description / Hype Points** for your token:")
         return COIN_DESC
     elif data == 'opt_contract':
-        await query.edit_message_text("3️⃣ أدخل **عنوان العقد الجديد (CA)**:")
+        await query.edit_message_text("3️⃣ Send your new **Token Contract Address (CA)**:")
         return CONTRACT
     elif data == 'opt_buy_link':
-        await query.edit_message_text("4️⃣ أدخل **رابط الشراء أو DEXScreener الجديد**:")
+        await query.edit_message_text("4️⃣ Send your new **DEXScreener or Buy Link**:")
         return BUY_LINK
     elif data == 'opt_msg_hour':
-        await query.edit_message_text("6️⃣ كم عدد الرسائل في الساعة؟ (أدخل رقماً من 1 إلى 20):")
+        await query.edit_message_text("6️⃣ How many posts per hour do you want? (Enter a number from 1 to 20):")
         return MSG_PER_HOUR
     elif data == 'opt_ratio':
         keyboard = [
             [InlineKeyboardButton("0%", callback_data='ratio_0'), InlineKeyboardButton("25%", callback_data='ratio_25'), InlineKeyboardButton("50%", callback_data='ratio_50')],
             [InlineKeyboardButton("75%", callback_data='ratio_75'), InlineKeyboardButton("100%", callback_data='ratio_100')]
         ]
-        await query.edit_message_text("7️⃣ ما هي نسبة منشورات الشراء والعقد؟", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text(
+            "7️⃣ Select the percentage of posts that should include **Buy Links & Contract Address**:\n"
+            "(e.g., 50% = half of the posts will have links, and half will be engagement/community posts without links)", 
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
         return LINK_RATIO
     elif data == 'opt_new_buy':
         keyboard = [
-            [InlineKeyboardButton("Yes 🚀 (تفعيل تنبيهات الشراء)", callback_data='newbuy_yes')],
-            [InlineKeyboardButton("No 🤖 (منشورات الذكاء الاصطناعي فقط)", callback_data='newbuy_no')]
+            [InlineKeyboardButton("Yes 🚀 (Enable Buy Alerts)", callback_data='newbuy_yes')],
+            [InlineKeyboardButton("No 🤖 (AI Posts Only)", callback_data='newbuy_no')]
         ]
-        await query.edit_message_text("8️⃣ هل تريد تفعيل تنبيهات الشراء الوهمية؟", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text("8️⃣ Would you like to enable **Simulated New Buy Alerts**?", reply_markup=InlineKeyboardMarkup(keyboard))
         return ENABLE_NEW_BUY
     elif data == 'opt_edit_all':
-        await query.edit_message_text("1️⃣ أرسل **اسم العملة الجديد**:")
+        await query.edit_message_text("1️⃣ Send your new **Token / Coin Name**:")
         return COIN_NAME
     elif data == 'opt_save_finish':
         return await finish_setup(update, context)
@@ -489,15 +493,12 @@ async def get_contract(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("4️⃣ Send your **DEXScreener or Buy Link**:")
     return BUY_LINK
 
-# --- دالة رابط الشراء المُصلحة بالكامل لتفادي التوقف ---
 async def get_buy_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['buy_link'] = update.message.text.strip()
     
-    # حالة التعديل من خلال قائمة الأزرار أو تعديل قناة موجودة
     if context.user_data.get('is_editing') or context.user_data.get('channel'):
         return await show_edit_options(update, context)
 
-    # حالة إضافة قناة جديدة لأول مرة
     await update.message.reply_text(
         "5️⃣ Send your **Channel Username or Link** (e.g., `@mychannel` or `https://t.me/mychannel`):"
     )
@@ -731,5 +732,5 @@ if __name__ == '__main__':
     loop = asyncio.get_event_loop()
     loop.create_task(restore_active_tasks(app))
 
-    print("DJANGO Bot with Interactive Edit Buttons & Fixes is running...")
+    print("DJANGO Bot is running with updated English interface...")
     app.run_polling(drop_pending_updates=True, stop_signals=None)
