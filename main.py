@@ -1,7 +1,6 @@
 import os
 import random
 import psycopg2
-import asyncio
 import logging
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -167,7 +166,7 @@ def run_health_check_server():
 
 threading.Thread(target=run_health_check_server, daemon=True).start()
 
-# States
+# States (تمت إضافة الحالات الناقصة للأزرار)
 (
     MAIN_MENU, PLAN_SELECT, COIN_NAME, COIN_DESC, CONTRACT, 
     BUY_LINK, CHANNEL, VERIFY_ADMIN, MSG_PER_HOUR, LINK_RATIO, ENABLE_NEW_BUY, 
@@ -177,11 +176,6 @@ threading.Thread(target=run_health_check_server, daemon=True).start()
 BUY_TEMPLATES = [
     "🚀 NEW BUY DETECTED!\n\n💎 Token: {coin_name}\n💰 Amount: ${amount}\n🛒 Buy Here: {buy_link}\n📜 Contract: {contract}\n\n🔥 Whales are accumulating!",
     "📈 GREEN CANDLE ALERT!\n\nNew buy order executed: ${amount} on {coin_name}! 🔥\n🛒 DEXScreener: {buy_link}\n📜 Contract: {contract}"
-]
-
-COMMUNITY_TEMPLATES = [
-    "☀️ Good Morning {coin_name} Army!\nWhat are your price targets for today? Drop them below! 👇🔥",
-    "🔥 GM legends! Is {coin_name} ready for the next big move? Stay tuned! 🚀"
 ]
 
 FREE_PLAN_AD_TEXT = "\n\n🤖 Powered by Django AI — Affordable AI tools for your crypto project!"
@@ -223,7 +217,6 @@ async def automated_poster_job(context: ContextTypes.DEFAULT_TYPE):
             link_ratio = data.get('link_ratio', 100)
             include_links = random.randint(1, 100) <= link_ratio
 
-            # اختيار نوع المنشور (عشوائي بين ترويجي أو تفاعلي)
             if data.get('enable_new_buy', False) and random.random() < 0.3:
                 template = random.choice(BUY_TEMPLATES)
                 amount = random.randint(100, 2500)
@@ -257,18 +250,19 @@ async def handle_group_messages(update: Update, context: ContextTypes.DEFAULT_TY
         text = message.text.strip()
         bot_username = context.bot.username
 
-        is_mentioned = f"@{bot_username}" in text or (message.reply_to_message and message.reply_to_message.from_user.id == context.bot.id)
+        # الرد فقط عند عمل منشن للبوت أو الرد على رسالته (لتفادي استنزاف الطلبات)
+        is_mentioned = (bot_username and f"@{bot_username}" in text) or (message.reply_to_message and message.reply_to_message.from_user and message.reply_to_message.from_user.id == context.bot.id)
 
-        if is_mentioned or chat.type == "group":
+        if is_mentioned:
             try:
                 client = get_next_gemini_client()
                 if not client:
                     return
 
                 prompt = f"""
-You are an intelligent, friendly crypto community assistant bot. Answering members in a Telegram group chat.
+You are an intelligent, friendly crypto community assistant bot answering members in a Telegram group chat.
 User message: "{text}"
-Respond helpfully, engagingly, and concisely in English (or match the user's language if they spoke Arabic/another language). Keep it natural and crypto-friendly.
+Respond helpfully, engagingly, and concisely in English (or match the user's language if they spoke Arabic). Keep it natural and crypto-friendly.
 """
                 response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
                 if response and response.text:
@@ -291,11 +285,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = "🤖 Welcome back to DJANGO Crypto Auto-Promoter & Group Assistant!\nWhat would you like to do?"
         if update.message:
             await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
-        else:
+        elif update.callback_query:
+            await update.callback_query.answer()
             await update.callback_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
         return MAIN_MENU
     else:
         return await show_subscription_plans(update, context)
+
+async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == 'menu_buy_new':
+        return await show_subscription_plans(update, context)
+    elif query.data == 'menu_edit_existing':
+        await query.edit_message_text("⚙️ Edit feature coming soon. Send /start to restart.")
+        return ConversationHandler.END
+    return MAIN_MENU
 
 async def show_subscription_plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
@@ -307,6 +312,7 @@ async def show_subscription_plans(update: Update, context: ContextTypes.DEFAULT_
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     if update.callback_query:
+        await update.callback_query.answer()
         await update.callback_query.edit_message_text(welcome_msg, reply_markup=reply_markup)
     else:
         await update.message.reply_text(welcome_msg, reply_markup=reply_markup)
@@ -365,14 +371,18 @@ def main():
 
     app = ApplicationBuilder().token(token).build()
 
-    # تشغيل نظام النشر التلقائي كل ساعة (أو حسب الحاجة)
     if app.job_queue:
         app.job_queue.run_repeating(automated_poster_job, interval=3600, first=10)
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
-            PLAN_SELECT: [CallbackQueryHandler(plan_selected, pattern='^plan_')],
+            # تم إضافة حالة القائمة الرئيسية لمعالجة استجابة الأزرار بنجاح
+            MAIN_MENU: [CallbackQueryHandler(menu_handler, pattern='^menu_')],
+            PLAN_SELECT: [
+                CallbackQueryHandler(plan_selected, pattern='^plan_'),
+                CallbackQueryHandler(show_subscription_plans, pattern='^back_to_plans')
+            ],
             COIN_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_coin_name)],
             COIN_DESC: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_coin_desc)],
             CONTRACT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_contract)],
@@ -383,9 +393,8 @@ def main():
     )
 
     app.add_handler(conv_handler)
-    app.add_handler(CommandHandler('start', start))
     
-    # معالجة رسائل المجموعات للتفاعل مع الأعضاء
+    # معالجة رسائل المجموعات للتفاعل مع الأعضاء (فقط عند عمل منشن للبوت)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & (filters.ChatType.GROUP | filters.ChatType.SUPERGROUP), handle_group_messages))
 
     logging.info("Bot is starting...")
