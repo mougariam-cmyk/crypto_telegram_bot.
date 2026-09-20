@@ -1,4 +1,4 @@
-Import os
+import os
 import random
 import psycopg2
 import asyncio
