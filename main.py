@@ -117,50 +117,39 @@ def save_user_data(user_id: int, username: str, data: dict):
     cursor.close()
     conn.close()
 
-def cancel_user_subscription(user_id: int, channel: str):
+def get_all_active_campaigns():
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
-        UPDATE users SET subscription_status = 'cancelled'
-        WHERE user_id = %s AND (channel = %s OR channel = %s);
-    ''', (user_id, channel, f"@{channel}" if not channel.startswith('@') else channel.replace('@', '')))
-    conn.commit()
+        SELECT user_id, selected_plan, coin_name, coin_desc, contract, buy_link, channel, msg_per_hour, enable_new_buy, link_ratio
+        FROM users WHERE subscription_status = 'active';
+    ''')
+    rows = cursor.fetchall()
     cursor.close()
     conn.close()
+    campaigns = []
+    for row in rows:
+        campaigns.append({
+            'user_id': row[0], 'selected_plan': row[1], 'coin_name': row[2],
+            'coin_desc': row[3], 'contract': row[4], 'buy_link': row[5],
+            'channel': row[6], 'msg_per_hour': row[7], 'enable_new_buy': bool(row[8]),
+            'link_ratio': row[9] if row[9] is not None else 100
+        })
+    return campaigns
 
 def get_user_channels(user_id: int):
     conn = get_db_connection()
     cursor = conn.cursor()
-    # تم تصحيح المشكلة هنا واستخدام الباراميترز بشكل صحيح لتجنب SyntaxError
     cursor.execute('SELECT channel, coin_name FROM users WHERE user_id = %s AND subscription_status = %s;', (user_id, 'active'))
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
     return rows
 
-def get_user_channel_data(user_id: int, channel: str):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT selected_plan, coin_name, coin_desc, contract, buy_link, channel, msg_per_hour, enable_new_buy, link_ratio
-        FROM users WHERE user_id = %s AND (channel = %s OR channel = %s) AND subscription_status = 'active';
-    ''', (user_id, channel, f"@{channel}" if not channel.startswith('@') else channel.replace('@', '')))
-    row = cursor.fetchone()
-    cursor.close()
-    conn.close()
-    if row:
-        return {
-            'user_id': user_id, 'selected_plan': row[0], 'coin_name': row[1],
-            'coin_desc': row[2], 'contract': row[3], 'buy_link': row[4],
-            'channel': row[5], 'msg_per_hour': row[6], 'enable_new_buy': bool(row[7]),
-            'link_ratio': row[8] if row[8] is not None else 100
-        }
-    return None
-
 init_db()
 
 # ==========================================
-# HEALTH CHECK SERVER (For Render/Replit)
+# HEALTH CHECK SERVER (For Render)
 # ==========================================
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -184,8 +173,6 @@ threading.Thread(target=run_health_check_server, daemon=True).start()
     BUY_LINK, CHANNEL, VERIFY_ADMIN, MSG_PER_HOUR, LINK_RATIO, ENABLE_NEW_BUY, 
     EDIT_SELECT_CHANNEL, EDIT_OPTIONS_MENU, CONFIRM_CANCEL_SUB
 ) = range(14)
-
-ACTIVE_PUBLISH_TASKS = {}
 
 BUY_TEMPLATES = [
     "🚀 NEW BUY DETECTED!\n\n💎 Token: {coin_name}\n💰 Amount: ${amount}\n🛒 Buy Here: {buy_link}\n📜 Contract: {contract}\n\n🔥 Whales are accumulating!",
@@ -226,7 +213,39 @@ def generate_ai_post(data, include_links=True):
         return get_fallback_message(data)
 
 # ==========================================
-# تفاعل البوت مع المجموعات (الرد على الأسئلة)
+# نظام النشر التلقائي (Background Poster Loop)
+# ==========================================
+async def automated_poster_job(context: ContextTypes.DEFAULT_TYPE):
+    campaigns = get_all_active_campaigns()
+    for data in campaigns:
+        try:
+            channel = data['channel']
+            link_ratio = data.get('link_ratio', 100)
+            include_links = random.randint(1, 100) <= link_ratio
+
+            # اختيار نوع المنشور (عشوائي بين ترويجي أو تفاعلي)
+            if data.get('enable_new_buy', False) and random.random() < 0.3:
+                template = random.choice(BUY_TEMPLATES)
+                amount = random.randint(100, 2500)
+                text = template.format(
+                    coin_name=data['coin_name'],
+                    amount=amount,
+                    buy_link=data['buy_link'],
+                    contract=data['contract']
+                )
+            else:
+                text = generate_ai_post(data, include_links=include_links)
+
+            if data.get('selected_plan') == 'free':
+                text += FREE_PLAN_AD_TEXT
+
+            await context.bot.send_message(chat_id=channel, text=text, disable_web_page_preview=True)
+            logging.info(f"Successfully posted to channel {channel}")
+        except Exception as e:
+            logging.error(f"Failed to send post to channel {data.get('channel')}: {e}")
+
+# ==========================================
+# التفاعل مع رسائل المستخدمين في المجموعات
 # ==========================================
 async def handle_group_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
@@ -258,7 +277,7 @@ Respond helpfully, engagingly, and concisely in English (or match the user's lan
                 logging.error(f"Group chat AI error: {e}")
 
 # ==========================================
-# دوال البوت الأساسية والإعدادات
+# واجهة البوت والخطوات
 # ==========================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -332,7 +351,7 @@ async def get_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username or ""
     save_user_data(user_id, username, context.user_data)
 
-    await update.message.reply_text(f"🎉 Success! Campaign configured for {formatted_channel}. The bot will now also reply to user queries in groups.")
+    await update.message.reply_text(f"🎉 Success! Campaign configured for {formatted_channel}. The bot will now publish posts automatically and reply to user queries in groups.")
     return ConversationHandler.END
 
 # ==========================================
@@ -345,6 +364,10 @@ def main():
         return
 
     app = ApplicationBuilder().token(token).build()
+
+    # تشغيل نظام النشر التلقائي كل ساعة (أو حسب الحاجة)
+    if app.job_queue:
+        app.job_queue.run_repeating(automated_poster_job, interval=3600, first=10)
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
@@ -362,6 +385,7 @@ def main():
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler('start', start))
     
+    # معالجة رسائل المجموعات للتفاعل مع الأعضاء
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & (filters.ChatType.GROUP | filters.ChatType.SUPERGROUP), handle_group_messages))
 
     logging.info("Bot is starting...")
