@@ -200,13 +200,55 @@ def run_health_check_server():
 
 threading.Thread(target=run_health_check_server, daemon=True).start()
 
+# ==========================================
+# CONVERSATION STATES & TRANSLATIONS
+# ==========================================
 (
+    CHOOSE_LANG, SOCIAL_LINKS,
     MAIN_MENU, PLAN_SELECT, COIN_NAME, COIN_DESC, CONTRACT, 
     BUY_LINK, CHANNEL, VERIFY_ADMIN, MSG_PER_HOUR, LINK_RATIO, ENABLE_NEW_BUY, 
     EDIT_SELECT_CHANNEL, EDIT_OPTIONS_MENU, CONFIRM_CANCEL_SUB
-) = range(14)
+) = range(16)
 
 ACTIVE_PUBLISH_TASKS = {}
+
+TRANSLATIONS = {
+    'en': {
+        'links_title': "🌐 **Official Links & Community**\n\nStay connected with us through our official channels:",
+        'btn_telegram': "📢 Telegram Channels",
+        'btn_twitter': "🐦 Twitter / X",
+        'btn_website': "💻 Official Website",
+        'btn_continue': "➡️ Continue to Dashboard"
+    },
+    'ru': {
+        'links_title': "🌐 **Официальные ссылки и сообщество**\n\nОставайтесь на связи с нами:",
+        'btn_telegram': "📢 Telegram каналы",
+        'btn_twitter': "🐦 Twitter / X",
+        'btn_website': "💻 Официальный сайт",
+        'btn_continue': "➡️ Продолжить"
+    },
+    'es': {
+        'links_title': "🌐 **Enlaces Oficiales y Comunidad**\n\nMantente conectado con nosotros:",
+        'btn_telegram': "📢 Canales de Telegram",
+        'btn_twitter': "🐦 Twitter / X",
+        'btn_website': "💻 Sitio Web Oficial",
+        'btn_continue': "➡️ Continuar al Panel"
+    },
+    'zh': {
+        'links_title': "🌐 **官方链接与社区**\n\n通过我们的官方渠道与保持联系：",
+        'btn_telegram': "📢 Telegram 频道",
+        'btn_twitter': "🐦 Twitter / X",
+        'btn_website': "💻 官方网站",
+        'btn_continue': "➡️ 进入控制面板"
+    },
+    'ar': {
+        'links_title': "🌐 **الروابط الرسمية والمجتمع**\n\nابق على تواصل معنا عبر قنواتنا الرسمية:",
+        'btn_telegram': "📢 قنوات تيليجرام",
+        'btn_twitter': "🐦 تويتر (منصة إكس)",
+        'btn_website': "💻 الموقع الرسمي",
+        'btn_continue': "➡️ متابعة إلى لوحة التحكم"
+    }
+}
 
 BUY_TEMPLATES = [
     "🚀 NEW BUY DETECTED!\n\n💎 Token: {coin_name}\n💰 Amount: ${amount}\n🛒 Buy Here: {buy_link}\n📜 Contract: {contract}\n\n🔥 Whales are accumulating!",
@@ -238,6 +280,64 @@ def parse_channel_input(user_input: str) -> str:
     return clean_input
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # واجهة ترحيبية بالإنجليزية حصرياً، تعرف بالذكاء الاصطناعي وقراءة الروح المعنوية للأعضاء
+    welcome_text = (
+        "🤖 **Welcome to AI Community Booster!**\n\n"
+        "I am an advanced Artificial Intelligence designed to analyze members' morale "
+        "through their messages and daily interactions. My primary mission is to **revitalize groups, "
+        "boost morale, and eliminate member inactivity**.\n\n"
+        "🌐 **Please select your language / Veuillez choisir votre langue / اختر لغتك:**"
+    )
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("🇬🇧 English", callback_data='lang_en'),
+            InlineKeyboardButton("🇷🇺 Русский", callback_data='lang_ru')
+        ],
+        [
+            InlineKeyboardButton("🇪🇸 Español", callback_data='lang_es'),
+            InlineKeyboardButton("🇨🇳 中文", callback_data='lang_zh')
+        ],
+        [
+            InlineKeyboardButton("🇸🇦 العربية", callback_data='lang_ar')
+        ]
+    ]
+    
+    if update.message:
+        await update.message.reply_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    else:
+        await update.callback_query.edit_message_text(welcome_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    
+    return CHOOSE_LANG
+
+async def language_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    lang_code = query.data.split('_')[1]
+    context.user_data['lang'] = lang_code
+    
+    t = TRANSLATIONS.get(lang_code, TRANSLATIONS['en'])
+    
+    # صفحة الروابط الرسمية (قنوات تيليجرام، تويتر، الموقع الرسمي)
+    keyboard = [
+        [InlineKeyboardButton(t['btn_telegram'], url="https://t.me/YourChannelLink")],
+        [InlineKeyboardButton(t['btn_twitter'], url="https://twitter.com/YourProfile")],
+        [InlineKeyboardButton(t['btn_website'], url="https://yourwebsite.com")],
+        [InlineKeyboardButton(t['btn_continue'], callback_data='proceed_to_dashboard')]
+    ]
+    
+    await query.edit_message_text(
+        f"{t['links_title']}",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+    return SOCIAL_LINKS
+
+async def proceed_to_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
     user_id = update.effective_user.id
     channels = get_user_channels(user_id)
 
@@ -247,15 +347,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("⚙️ Edit Settings for Existing Channel", callback_data='menu_edit_existing')]
         ]
         msg = "🤖 Welcome back to DJANGO Crypto Auto-Promoter!\n\nYou have active channel promotional campaigns running.\nWhat would you like to do today?"
-        if update.message:
-            await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
-        else:
-            await update.callback_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
         return MAIN_MENU
     else:
-        return await show_subscription_plans(update, context)
+        return await show_subscription_plans_callback(query, context)
 
-async def show_subscription_plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_subscription_plans_callback(query, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     welcome_msg = "🤖 Welcome to DJANGO Crypto Auto-Promoter Bot!\n\nBoost your channel engagement with AI posts & buy alerts.\n\n💰 Select a Plan to Activate:"
     keyboard = [
@@ -264,10 +361,7 @@ async def show_subscription_plans(update: Update, context: ContextTypes.DEFAULT_
         [InlineKeyboardButton("💎 6 Months ($50 TON)", callback_data='plan_6_months')],
         [InlineKeyboardButton("💎 12 Months ($80 TON)", callback_data='plan_12_months')]
     ]
-    if update.callback_query:
-        await update.callback_query.edit_message_text(welcome_msg, reply_markup=InlineKeyboardMarkup(keyboard))
-    else:
-        await update.message.reply_text(welcome_msg, reply_markup=InlineKeyboardMarkup(keyboard))
+    await query.edit_message_text(welcome_msg, reply_markup=InlineKeyboardMarkup(keyboard))
     return PLAN_SELECT
 
 if __name__ == '__main__':
@@ -280,12 +374,18 @@ if __name__ == '__main__':
         conv_handler = ConversationHandler(
             entry_points=[CommandHandler('start', start)],
             states={
+                CHOOSE_LANG: [
+                    CallbackQueryHandler(language_chosen, pattern='^lang_')
+                ],
+                SOCIAL_LIN_KS_STATE := SOCIAL_LINKS: [
+                    CallbackQueryHandler(proceed_to_dashboard, pattern='^proceed_to_dashboard$')
+                ],
                 MAIN_MENU: [
                     CallbackQueryHandler(start, pattern='^menu_buy_new$'),
                     CallbackQueryHandler(start, pattern='^menu_edit_existing$')
                 ],
                 PLAN_SELECT: [
-                    CallbackQueryHandler(show_subscription_plans, pattern='^plan_')
+                    CallbackQueryHandler(show_subscription_plans_callback, pattern='^plan_')
                 ]
             },
             fallbacks=[CommandHandler('start', start)],
