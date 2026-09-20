@@ -131,7 +131,8 @@ def cancel_user_subscription(user_id: int, channel: str):
 def get_user_channels(user_id: int):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('SELECT channel, coin_name FROM users WHERE user_id = %s AND subscription_status = 'active';', (user_id,))
+    # تم تصحيح المشكلة هنا واستخدام الباراميترز بشكل صحيح لتجنب SyntaxError
+    cursor.execute('SELECT channel, coin_name FROM users WHERE user_id = %s AND subscription_status = %s;', (user_id, 'active'))
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
@@ -233,15 +234,13 @@ async def handle_group_messages(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     chat = message.chat
-    # التحقق مما إذا كانت الرسالة في مجموعة أو مجموعة خارقة
     if chat.type in ["group", "supergroup"]:
         text = message.text.strip()
         bot_username = context.bot.username
 
-        # هل تم عمل Mention للبوت أو الرد على رسالته؟
         is_mentioned = f"@{bot_username}" in text or (message.reply_to_message and message.reply_to_message.from_user.id == context.bot.id)
 
-        if is_mentioned or chat.type == "group":  # يمكنك جعل البوت يجيب على كل الرسائل أو فقط عند عمل منشن
+        if is_mentioned or chat.type == "group":
             try:
                 client = get_next_gemini_client()
                 if not client:
@@ -363,7 +362,6 @@ def main():
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler('start', start))
     
-    # معالج رسائل المجموعات للتفاعل والإجابة على الأعضاء
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & (filters.ChatType.GROUP | filters.ChatType.SUPERGROUP), handle_group_messages))
 
     logging.info("Bot is starting...")
