@@ -76,16 +76,13 @@ def save_user_data(user_id: int, username: str, data: dict):
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # التحقق مما إذا كانت القناة مسجلة مسبقاً ولديه خطة مدفوعة، لمنع الكتابة فوقها بالخطأ إذا لزم الأمر
     cursor.execute('''
         SELECT selected_plan FROM users WHERE user_id = %s AND channel = %s AND subscription_status = 'active';
     ''', (user_id, data.get('channel', '')))
     existing = cursor.fetchone()
     
-    # إذا كانت القناة موجودة ولديه اشتراك مدفوع، ولا نريد للبوت أن يحولها لمجاني عن طريق الخطأ
     target_plan = data.get('selected_plan', 'free')
     if existing and existing[0] != 'free' and target_plan == 'free' and not data.get('is_editing'):
-        # الحفاظ على الخطة المدفوعة وعدم تغييرها إلى مجاني تلقائياً
         target_plan = existing[0]
 
     cursor.execute('''
@@ -450,27 +447,33 @@ async def edit_options_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     data = query.data
 
     if data == 'opt_coin_name':
-        await query.edit_message_text("1️⃣ Send your new **Token / Coin Name** (e.g., HIPPO):")
+        keyboard = [[InlineKeyboardButton("⬅️ العودة إلى الوراء", callback_data='back_to_edit_options')]]
+        await query.edit_message_text("1️⃣ Send your new **Token / Coin Name** (e.g., HIPPO):", reply_markup=InlineKeyboardMarkup(keyboard))
         return COIN_NAME
     elif data == 'opt_coin_desc':
-        await query.edit_message_text("2️⃣ Send a new **Description / Hype Points** for your token:")
+        keyboard = [[InlineKeyboardButton("⬅️ العودة إلى الوراء", callback_data='back_to_edit_options')]]
+        await query.edit_message_text("2️⃣ Send a new **Description / Hype Points** for your token:", reply_markup=InlineKeyboardMarkup(keyboard))
         return COIN_DESC
     elif data == 'opt_contract':
-        await query.edit_message_text("3️⃣ Send your new **Token Contract Address (CA)**:")
+        keyboard = [[InlineKeyboardButton("⬅️ العودة إلى الوراء", callback_data='back_to_edit_options')]]
+        await query.edit_message_text("3️⃣ Send your new **Token Contract Address (CA)**:", reply_markup=InlineKeyboardMarkup(keyboard))
         return CONTRACT
     elif data == 'opt_buy_link':
-        await query.edit_message_text("4️⃣ Send your new **DEXScreener or Buy Link**:")
+        keyboard = [[InlineKeyboardButton("⬅️ العودة إلى الوراء", callback_data='back_to_edit_options')]]
+        await query.edit_message_text("4️⃣ Send your new **DEXScreener or Buy Link**:", reply_markup=InlineKeyboardMarkup(keyboard))
         return BUY_LINK
     elif data == 'opt_msg_hour':
         if context.user_data.get('selected_plan') == 'free':
             await query.answer("⚠️ Free Plan is restricted to 4 posts/day maximum. Upgrade to Premium to customize frequency!", show_alert=True)
             return EDIT_OPTIONS_MENU
-        await query.edit_message_text("6️⃣ How many posts per hour do you want? (Enter a number from 1 to 20):")
+        keyboard = [[InlineKeyboardButton("⬅️ العودة إلى الوراء", callback_data='back_to_edit_options')]]
+        await query.edit_message_text("6️⃣ How many posts per hour do you want? (Enter a number from 1 to 20):", reply_markup=InlineKeyboardMarkup(keyboard))
         return MSG_PER_HOUR
     elif data == 'opt_ratio':
         keyboard = [
             [InlineKeyboardButton("0%", callback_data='ratio_0'), InlineKeyboardButton("25%", callback_data='ratio_25'), InlineKeyboardButton("50%", callback_data='ratio_50')],
-            [InlineKeyboardButton("75%", callback_data='ratio_75'), InlineKeyboardButton("100%", callback_data='ratio_100')]
+            [InlineKeyboardButton("75%", callback_data='ratio_75'), InlineKeyboardButton("100%", callback_data='ratio_100')],
+            [InlineKeyboardButton("⬅️ العودة إلى الوراء", callback_data='back_to_edit_options')]
         ]
         await query.edit_message_text(
             "7️⃣ Select the percentage of posts that should include **Buy Links & Contract Address**:", 
@@ -480,13 +483,15 @@ async def edit_options_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     elif data == 'opt_new_buy':
         keyboard = [
             [InlineKeyboardButton("Yes 🚀 (Enable Buy Alerts)", callback_data='newbuy_yes')],
-            [InlineKeyboardButton("No 🤖 (AI Posts Only)", callback_data='newbuy_no')]
+            [InlineKeyboardButton("No 🤖 (AI Posts Only)", callback_data='newbuy_no')],
+            [InlineKeyboardButton("⬅️ العودة إلى الوراء", callback_data='back_to_edit_options')]
         ]
         await query.edit_message_text("8️⃣ Would you like to enable **Simulated New Buy Alerts**?", reply_markup=InlineKeyboardMarkup(keyboard))
         return ENABLE_NEW_BUY
     elif data == 'opt_edit_all':
         context.user_data['is_editing'] = False
-        await query.edit_message_text("1️⃣ Send your new **Token / Coin Name**:")
+        keyboard = [[InlineKeyboardButton("⬅️ العودة إلى الوراء", callback_data='back_to_edit_options')]]
+        await query.edit_message_text("1️⃣ Send your new **Token / Coin Name**:", reply_markup=InlineKeyboardMarkup(keyboard))
         return COIN_NAME
     elif data == 'opt_cancel_sub':
         channel = context.user_data.get('channel', '')
@@ -539,50 +544,103 @@ async def plan_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "1️⃣ Send your **Token / Coin Name** (e.g., HIPPO):"
     )
     
-    await query.edit_message_text(msg, parse_mode='Markdown')
+    keyboard = [[InlineKeyboardButton("⬅️ العودة إلى الوراء", callback_data='back_to_plans')]]
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
     return COIN_NAME
 
 async def get_coin_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        if query.data == 'back_to_edit_options':
+            return await show_edit_options(update, context)
+        elif query.data == 'back_to_plans':
+            return await show_subscription_plans(update, context)
+            
     context.user_data['coin_name'] = update.message.text.strip()
     if context.user_data.get('is_editing'):
         return await show_edit_options(update, context)
-    await update.message.reply_text("2️⃣ Send a brief **Description / Hype Points** for your token:")
+        
+    keyboard = [[InlineKeyboardButton("⬅️ العودة إلى الوراء", callback_data='back_to_coin_name')]]
+    await update.message.reply_text("2️⃣ Send a brief **Description / Hype Points** for your token:", reply_markup=InlineKeyboardMarkup(keyboard))
     return COIN_DESC
 
 async def get_coin_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        if query.data == 'back_to_edit_options':
+            return await show_edit_options(update, context)
+        elif query.data == 'back_to_coin_name':
+            keyboard = [[InlineKeyboardButton("⬅️ العودة إلى الوراء", callback_data='back_to_plans')]]
+            await query.edit_message_text("1️⃣ Send your **Token / Coin Name** (e.g., HIPPO):", reply_markup=InlineKeyboardMarkup(keyboard))
+            return COIN_NAME
+
     context.user_data['coin_desc'] = update.message.text.strip()
     if context.user_data.get('is_editing'):
         return await show_edit_options(update, context)
-    await update.message.reply_text("3️⃣ Send your **Token Contract Address (CA)**:")
+        
+    keyboard = [[InlineKeyboardButton("⬅️ العودة إلى الوراء", callback_data='back_to_coin_desc')]]
+    await update.message.reply_text("3️⃣ Send your **Token Contract Address (CA)**:", reply_markup=InlineKeyboardMarkup(keyboard))
     return CONTRACT
 
 async def get_contract(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        if query.data == 'back_to_edit_options':
+            return await show_edit_options(update, context)
+        elif query.data == 'back_to_coin_desc':
+            keyboard = [[InlineKeyboardButton("⬅️ العودة إلى الوراء", callback_data='back_to_coin_name')]]
+            await query.edit_message_text("2️⃣ Send a brief **Description / Hype Points** for your token:", reply_markup=InlineKeyboardMarkup(keyboard))
+            return COIN_DESC
+
     context.user_data['contract'] = update.message.text.strip()
     if context.user_data.get('is_editing'):
         return await show_edit_options(update, context)
-    await update.message.reply_text("4️⃣ Send your **DEXScreener or Buy Link**:")
+        
+    keyboard = [[InlineKeyboardButton("⬅️ العودة إلى الوراء", callback_data='back_to_contract')]]
+    await update.message.reply_text("4️⃣ Send your **DEXScreener or Buy Link**:", reply_markup=InlineKeyboardMarkup(keyboard))
     return BUY_LINK
 
 async def get_buy_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        if query.data == 'back_to_edit_options':
+            return await show_edit_options(update, context)
+        elif query.data == 'back_to_contract':
+            keyboard = [[InlineKeyboardButton("⬅️ العودة إلى الوراء", callback_data='back_to_coin_desc')]]
+            await query.edit_message_text("3️⃣ Send your **Token Contract Address (CA)**:", reply_markup=InlineKeyboardMarkup(keyboard))
+            return CONTRACT
+
     context.user_data['buy_link'] = update.message.text.strip()
     
     if context.user_data.get('is_editing'):
         return await show_edit_options(update, context)
 
+    keyboard = [[InlineKeyboardButton("⬅️ العودة إلى الوراء", callback_data='back_to_buy_link')]]
     await update.message.reply_text(
-        "5️⃣ Send your **Channel Username or Link** (e.g., `@mychannel` or `https://t.me/mychannel`):"
+        "5️⃣ Send your **Channel Username or Link** (e.g., `@mychannel` or `https://t.me/mychannel`):",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return CHANNEL
 
 async def get_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        if query.data == 'back_to_buy_link':
+            keyboard = [[InlineKeyboardButton("⬅️ العودة إلى الوراء", callback_data='back_to_contract')]]
+            await query.edit_message_text("4️⃣ Send your **DEXScreener or Buy Link**:", reply_markup=InlineKeyboardMarkup(keyboard))
+            return BUY_LINK
+
     raw_channel = update.message.text.strip()
     formatted_channel = parse_channel_input(raw_channel)
     user_id = update.effective_user.id
 
-    # 🛑 حماية القنوات المدفوعة: التحقق مما إذا كانت القناة مسجلة مسبقاً باشتراك مدفوع نشط
     existing_data = get_user_channel_data(user_id, formatted_channel)
     if existing_data and existing_data['selected_plan'] != 'free' and context.user_data.get('selected_plan') == 'free':
-        # إذا حاول المستخدم إدخال قناة لديها اشتراك مدفوع في الخطة المجانية، نقوم بالاحتفاظ باشتراكه المدفوع منعاً لإلغائه
         context.user_data['selected_plan'] = existing_data['selected_plan']
         await update.message.reply_text(
             f"ℹ️ **Notice:** This channel (`{formatted_channel}`) already has an active **{existing_data['selected_plan'].upper()}** subscription. "
@@ -596,7 +654,10 @@ async def get_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Please add this bot as an **Administrator** in your channel `{formatted_channel}` with **Post Messages** permission.\n\n"
         "Click the button below once you have promoted the bot!"
     )
-    keyboard = [[InlineKeyboardButton("🔗 I have promoted the bot / Continue", callback_data='verify_admin')]]
+    keyboard = [
+        [InlineKeyboardButton("🔗 I have promoted the bot / Continue", callback_data='verify_admin')],
+        [InlineKeyboardButton("⬅️ العودة إلى الوراء", callback_data='back_to_channel')]
+    ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode='Markdown')
@@ -604,6 +665,13 @@ async def get_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def verify_admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    await query.answer()
+    
+    if query.data == 'back_to_channel':
+        keyboard = [[InlineKeyboardButton("⬅️ العودة إلى الوراء", callback_data='back_to_buy_link')]]
+        await query.edit_message_text("5️⃣ Send your **Channel Username or Link** (e.g., `@mychannel` or `https://t.me/mychannel`):", reply_markup=InlineKeyboardMarkup(keyboard))
+        return CHANNEL
+
     channel_id = context.user_data.get('channel')
     bot_id = context.bot.id
 
@@ -624,7 +692,8 @@ async def verify_admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE
                     [
                         InlineKeyboardButton("75%", callback_data='ratio_75'),
                         InlineKeyboardButton("100%", callback_data='ratio_100')
-                    ]
+                    ],
+                    [InlineKeyboardButton("⬅️ العودة إلى الوراء", callback_data='back_to_verify')]
                 ]
                 await query.edit_message_text(
                     "✅ **Admin Status Verified!**\n\n"
@@ -634,9 +703,13 @@ async def verify_admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE
                 )
                 return LINK_RATIO
 
+            keyboard = [
+                [InlineKeyboardButton("⬅️ العودة إلى الوراء", callback_data='back_to_verify')]
+            ]
             await query.edit_message_text(
                 "✅ **Admin Status Verified!**\n\n"
                 "6️⃣ How many posts per hour do you want? (Enter a number from 1 to 20):",
+                reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode='Markdown'
             )
             return MSG_PER_HOUR
@@ -650,6 +723,25 @@ async def verify_admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE
         return VERIFY_ADMIN
 
 async def get_msg_per_hour(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        if query.data == 'back_to_verify':
+            channel_id = context.user_data.get('channel')
+            msg = (
+                f"⚠️ **IMPORTANT STEP: Admin Rights Required!**\n\n"
+                f"Please add this bot as an **Administrator** in your channel `{channel_id}` with **Post Messages** permission.\n\n"
+                "Click the button below once you have promoted the bot!"
+            )
+            keyboard = [
+                [InlineKeyboardButton("🔗 I have promoted the bot / Continue", callback_data='verify_admin')],
+                [InlineKeyboardButton("⬅️ العودة إلى الوراء", callback_data='back_to_channel')]
+            ]
+            await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+            return VERIFY_ADMIN
+        elif query.data == 'back_to_edit_options':
+            return await show_edit_options(update, context)
+
     try:
         count = int(update.message.text.strip())
         count = max(1, min(20, count))
@@ -669,7 +761,8 @@ async def get_msg_per_hour(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [
             InlineKeyboardButton("75%", callback_data='ratio_75'),
             InlineKeyboardButton("100%", callback_data='ratio_100')
-        ]
+        ],
+        [InlineKeyboardButton("⬅️ العودة إلى الوراء", callback_data='back_to_msg_hour')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
@@ -682,6 +775,28 @@ async def get_link_ratio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
+    if query.data == 'back_to_msg_hour':
+        if context.user_data.get('selected_plan') == 'free':
+            return await verify_admin_status(update, context)
+        keyboard = [[InlineKeyboardButton("⬅️ العودة إلى الوراء", callback_data='back_to_verify')]]
+        await query.edit_message_text("6️⃣ How many posts per hour do you want? (Enter a number from 1 to 20):", reply_markup=InlineKeyboardMarkup(keyboard))
+        return MSG_PER_HOUR
+    elif query.data == 'back_to_verify':
+        channel_id = context.user_data.get('channel')
+        msg = (
+            f"⚠️ **IMPORTANT STEP: Admin Rights Required!**\n\n"
+            f"Please add this bot as an **Administrator** in your channel `{channel_id}` with **Post Messages** permission.\n\n"
+            "Click the button below once you have promoted the bot!"
+        )
+        keyboard = [
+            [InlineKeyboardButton("🔗 I have promoted the bot / Continue", callback_data='verify_admin')],
+            [InlineKeyboardButton("⬅️ العودة إلى الوراء", callback_data='back_to_channel')]
+        ]
+        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        return VERIFY_ADMIN
+    elif query.data == 'back_to_edit_options':
+        return await show_edit_options(update, context)
+
     ratio = int(query.data.replace('ratio_', ''))
     context.user_data['link_ratio'] = ratio
 
@@ -692,7 +807,8 @@ async def get_link_ratio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [
             InlineKeyboardButton("Yes 🚀 (Include Buy Alerts)", callback_data='newbuy_yes'),
             InlineKeyboardButton("No 🤖 (AI Hype Only)", callback_data='newbuy_no')
-        ]
+        ],
+        [InlineKeyboardButton("⬅️ العودة إلى الوراء", callback_data='back_to_ratio')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(
@@ -705,6 +821,18 @@ async def finish_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         query = update.callback_query
         await query.answer()
+        if query.data == 'back_to_ratio':
+            keyboard = [
+                [InlineKeyboardButton("0%", callback_data='ratio_0'), InlineKeyboardButton("25%", callback_data='ratio_25'), InlineKeyboardButton("50%", callback_data='ratio_50')],
+                [InlineKeyboardButton("75%", callback_data='ratio_75'), InlineKeyboardButton("100%", callback_data='ratio_100')],
+                [InlineKeyboardButton("⬅️ العودة إلى الوراء", callback_data='back_to_msg_hour')]
+            ]
+            await query.edit_message_text(
+                "7️⃣ What percentage of posts should contain **Buy Links & Contract Address**?", 
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return LINK_RATIO
+
         if query.data.startswith('newbuy_'):
             context.user_data['enable_new_buy'] = (query.data == 'newbuy_yes')
         user_id = query.from_user.id
@@ -715,10 +843,8 @@ async def finish_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     channel = context.user_data.get('channel')
 
-    # حفظ البيانات مع الحماية ضد استبدال المدفوع بالمجاني
     save_user_data(user_id, username, context.user_data)
     
-    # فتح نافذة التعديلات تلقائياً بعد الانتهاء
     await show_edit_options(update, context)
     
     if channel in ACTIVE_PUBLISH_TASKS:
@@ -778,35 +904,62 @@ async def restore_active_tasks(app):
 
 if __name__ == '__main__':
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-
+    
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
-            MAIN_MENU: [CallbackQueryHandler(main_menu_handler, pattern='^menu_')],
-            EDIT_SELECT_CHANNEL: [CallbackQueryHandler(select_channel_to_edit, pattern='^edit_ch_')],
-            EDIT_OPTIONS_MENU: [CallbackQueryHandler(edit_options_handler, pattern='^opt_')],
-            CONFIRM_CANCEL_SUB: [CallbackQueryHandler(confirm_cancel_sub_handler, pattern='^confirm_cancel_')],
-            PLAN_SELECT: [CallbackQueryHandler(plan_selected, pattern='^plan_')],
-            COIN_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_coin_name)],
-            COIN_DESC: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_coin_desc)],
-            CONTRACT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_contract)],
-            BUY_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_buy_link)],
-            CHANNEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_channel)],
-            VERIFY_ADMIN: [CallbackQueryHandler(verify_admin_status, pattern='^verify_admin$')],
-            MSG_PER_HOUR: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_msg_per_hour)],
-            LINK_RATIO: [CallbackQueryHandler(get_link_ratio, pattern='^ratio_')],
+            MAIN_MENU: [CallbackQueryHandler(main_menu_handler)],
+            PLAN_SELECT: [CallbackQueryHandler(plan_selected)],
+            COIN_NAME: [
+                CallbackQueryHandler(get_coin_name, pattern='^(back_to_edit_options|back_to_plans)$'),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_coin_name)
+            ],
+            COIN_DESC: [
+                CallbackQueryHandler(get_coin_desc, pattern='^(back_to_edit_options|back_to_coin_name)$'),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_coin_desc)
+            ],
+            CONTRACT: [
+                CallbackQueryHandler(get_contract, pattern='^(back_to_edit_options|back_to_coin_desc)$'),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_contract)
+            ],
+            BUY_LINK: [
+                CallbackQueryHandler(get_buy_link, pattern='^(back_to_edit_options|back_to_contract)$'),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_buy_link)
+            ],
+            CHANNEL: [
+                CallbackQueryHandler(get_channel, pattern='^back_to_buy_link$'),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_channel)
+            ],
+            VERIFY_ADMIN: [
+                CallbackQueryHandler(verify_admin_status, pattern='^(verify_admin|back_to_channel)$')
+            ],
+            MSG_PER_HOUR: [
+                CallbackQueryHandler(get_msg_per_hour, pattern='^(back_to_verify|back_to_edit_options)$'),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_msg_per_hour)
+            ],
+            LINK_RATIO: [
+                CallbackQueryHandler(get_link_ratio, pattern='^(ratio_.*|back_to_msg_hour|back_to_verify|back_to_edit_options)$')
+            ],
             ENABLE_NEW_BUY: [
-                CallbackQueryHandler(finish_setup, pattern='^newbuy_'),
+                CallbackQueryHandler(finish_setup, pattern='^(newbuy_.*|back_to_ratio)$')
+            ],
+            EDIT_SELECT_CHANNEL: [
+                CallbackQueryHandler(select_channel_to_edit, pattern='^edit_ch_')
+            ],
+            EDIT_OPTIONS_MENU: [
                 CallbackQueryHandler(edit_options_handler, pattern='^opt_')
             ],
+            CONFIRM_CANCEL_SUB: [
+                CallbackQueryHandler(confirm_cancel_sub_handler, pattern='^confirm_cancel_')
+            ]
         },
-        fallbacks=[CommandHandler('cancel', cancel)],
+        fallbacks=[CommandHandler('cancel', cancel)]
     )
-
+    
     app.add_handler(conv_handler)
     
     loop = asyncio.get_event_loop()
-    loop.create_task(restore_active_tasks(app))
-
-    print("DJANGO Bot running...")
-    app.run_polling(drop_pending_updates=True, stop_signals=None)
+    loop.run_until_complete(restore_active_tasks(app))
+    
+    logging.info("Bot is polling...")
+    app.run_polling()
