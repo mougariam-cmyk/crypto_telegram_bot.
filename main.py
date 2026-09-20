@@ -255,8 +255,8 @@ if __name__ == '__main__':
             entry_points=[CommandHandler('start', start)],
             states={
                 MAIN_MENU: [
-                    CallbackQueryHandler(start, pattern='^menu_buy_new$'),
-                    CallbackQueryHandler(start, pattern='^menu_edit_existing$')
+                    CallbackQueryHandler(show_subscription_plans, pattern='^menu_buy_new$'),
+                    CallbackQueryHandler(show_subscription_plans, pattern='^menu_edit_existing$')
                 ],
                 PLAN_SELECT: [
                     CallbackQueryHandler(show_subscription_plans, pattern='^plan_')
