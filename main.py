@@ -374,8 +374,8 @@ if __name__ == '__main__':
                     CallbackQueryHandler(proceed_to_dashboard, pattern='^proceed_to_dashboard$')
                 ],
                 MAIN_MENU: [
-                    CallbackQueryHandler(start, pattern='^menu_buy_new$'),
-                    CallbackQueryHandler(start, pattern='^menu_edit_existing$')
+                    CallbackQueryHandler(show_subscription_plans_callback, pattern='^menu_buy_new$'),
+                    CallbackQueryHandler(show_subscription_plans_callback, pattern='^menu_edit_existing$')
                 ],
                 PLAN_SELECT: [
                     CallbackQueryHandler(show_subscription_plans_callback, pattern='^plan_')
