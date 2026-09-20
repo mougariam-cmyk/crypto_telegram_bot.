@@ -123,7 +123,7 @@ def cancel_user_subscription(user_id: int, channel: str):
     cursor.execute('''
         UPDATE users SET subscription_status = 'cancelled'
         WHERE user_id = %s AND (channel = %s OR channel = %s);
-    ''', (user_id, channel, f"@{channel}" if not channel.startswith('@') else channel.replace('@', '')))
+    ''', (user_id, channel, f"@{channel}" if not channel.startswith('@' ) else channel.replace('@', '')))
     conn.commit()
     cursor.close()
     conn.close()
@@ -255,8 +255,8 @@ if __name__ == '__main__':
             entry_points=[CommandHandler('start', start)],
             states={
                 MAIN_MENU: [
-                    CallbackQueryHandler(show_subscription_plans, pattern='^menu_buy_new$'),
-                    CallbackQueryHandler(show_subscription_plans, pattern='^menu_edit_existing$')
+                    CallbackQueryHandler(start, pattern='^menu_buy_new$'),
+                    CallbackQueryHandler(start, pattern='^menu_edit_existing$')
                 ],
                 PLAN_SELECT: [
                     CallbackQueryHandler(show_subscription_plans, pattern='^plan_')
