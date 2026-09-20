@@ -59,7 +59,15 @@ def init_db():
     
     # 2. Add link_ratio column if missing in existing table
     cursor.execute('''
-        DO $$          BEGIN              IF NOT EXISTS (                 SELECT 1 FROM information_schema.columns                  WHERE table_name='users' AND column_name='link_ratio'             ) THEN                  ALTER TABLE users ADD COLUMN link_ratio INTEGER DEFAULT 100;              END IF;          END $$;
+        DO $$ 
+        BEGIN 
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns 
+                WHERE table_name='users' AND column_name='link_ratio'
+            ) THEN 
+                ALTER TABLE users ADD COLUMN link_ratio INTEGER DEFAULT 100; 
+            END IF; 
+        END $$;
     ''')
     
     conn.commit()
@@ -99,6 +107,18 @@ def save_user_data(user_id: int, username: str, data: dict):
         1 if data.get('enable_new_buy', False) else 0,
         data.get('link_ratio', 100)
     ))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+def cancel_user_subscription(user_id: int, channel: str):
+    """Update subscription status to 'cancelled' for a specific user & channel."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        UPDATE users SET subscription_status = 'cancelled'
+        WHERE user_id = %s AND (channel = %s OR channel = %s);
+    ''', (user_id, channel, f"@{channel}" if not channel.startswith('@') else channel.replace('@', '')))
     conn.commit()
     cursor.close()
     conn.close()
@@ -194,8 +214,8 @@ threading.Thread(target=run_health_check_server, daemon=True).start()
 (
     MAIN_MENU, PLAN_SELECT, COIN_NAME, COIN_DESC, CONTRACT, 
     BUY_LINK, CHANNEL, VERIFY_ADMIN, MSG_PER_HOUR, LINK_RATIO, ENABLE_NEW_BUY, 
-    EDIT_SELECT_CHANNEL, EDIT_OPTIONS_MENU
-) = range(13)
+    EDIT_SELECT_CHANNEL, EDIT_OPTIONS_MENU, CONFIRM_CANCEL_SUB
+) = range(14)
 
 # Global dictionary to track active publishing asyncio tasks by channel_id
 ACTIVE_PUBLISH_TASKS = {}
@@ -399,7 +419,7 @@ async def show_edit_options(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"6️⃣ **Posts Frequency:** `{posts_freq}`\n"
         f"7️⃣ **Posts with Links Ratio:** `{data.get('link_ratio', 100)}%`\n"
         f"8️⃣ **Simulated Buy Alerts:** `{'Enabled' if data.get('enable_new_buy') else 'Disabled'}`\n\n"
-        "👇 **Select an option below to update:**"
+        "👇 **Select an option below to update or cancel:**"
     )
 
     keyboard = [
@@ -408,6 +428,7 @@ async def show_edit_options(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("⏱️ Posts Frequency", callback_data='opt_msg_hour'), InlineKeyboardButton("📊 Posts with Links Ratio", callback_data='opt_ratio')],
         [InlineKeyboardButton("🚀 Buy Alerts Toggle", callback_data='opt_new_buy')],
         [InlineKeyboardButton("🔄 Re-configure All Settings Step-by-Step", callback_data='opt_edit_all')],
+        [InlineKeyboardButton("❌ Cancel / Stop Subscription", callback_data='opt_cancel_sub')],
         [InlineKeyboardButton("✅ Save & Exit Settings", callback_data='opt_save_finish')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -478,8 +499,47 @@ async def edit_options_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     elif data == 'opt_edit_all':
         await query.edit_message_text("1️⃣ Send your new **Token / Coin Name**:")
         return COIN_NAME
+    elif data == 'opt_cancel_sub':
+        channel = context.user_data.get('channel', '')
+        keyboard = [
+            [InlineKeyboardButton("YES, Stop Auto-Promoter 🛑", callback_data='confirm_cancel_yes')],
+            [InlineKeyboardButton("NO, Keep Publishing 🚀", callback_data='confirm_cancel_no')]
+        ]
+        await query.edit_message_text(
+            f"⚠️ **Are you sure you want to cancel your campaign for {channel}?**\n\n"
+            "This will immediately stop all automatic posting in this channel.",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+        return CONFIRM_CANCEL_SUB
     elif data == 'opt_save_finish':
         return await finish_setup(update, context)
+
+async def confirm_cancel_sub_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == 'confirm_cancel_yes':
+        user_id = query.from_user.id
+        channel = context.user_data.get('channel')
+
+        # 1. Update status in database
+        cancel_user_subscription(user_id, channel)
+
+        # 2. Stop active publisher task immediately
+        if channel in ACTIVE_PUBLISH_TASKS:
+            ACTIVE_PUBLISH_TASKS[channel].cancel()
+            del ACTIVE_PUBLISH_TASKS[channel]
+
+        await query.edit_message_text(
+            f"🛑 **Subscription Cancelled!**\n\n"
+            f"Auto-publishing for channel `{channel}` has been permanently stopped.\n"
+            "You can start a new campaign anytime by typing `/start`.",
+            parse_mode='Markdown'
+        )
+        return ConversationHandler.END
+    else:
+        return await show_edit_options(update, context)
 
 async def plan_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -780,6 +840,7 @@ if __name__ == '__main__':
             MAIN_MENU: [CallbackQueryHandler(main_menu_handler, pattern='^menu_')],
             EDIT_SELECT_CHANNEL: [CallbackQueryHandler(select_channel_to_edit, pattern='^edit_ch_')],
             EDIT_OPTIONS_MENU: [CallbackQueryHandler(edit_options_handler, pattern='^opt_')],
+            CONFIRM_CANCEL_SUB: [CallbackQueryHandler(confirm_cancel_sub_handler, pattern='^confirm_cancel_')],
             PLAN_SELECT: [CallbackQueryHandler(plan_selected, pattern='^plan_')],
             COIN_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_coin_name)],
             COIN_DESC: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_coin_desc)],
@@ -803,5 +864,5 @@ if __name__ == '__main__':
     loop = asyncio.get_event_loop()
     loop.create_task(restore_active_tasks(app))
 
-    print("DJANGO Bot running with Free Plan support...")
+    print("DJANGO Bot running with Free Plan and Subscription Cancel feature...")
     app.run_polling(drop_pending_updates=True, stop_signals=None)
