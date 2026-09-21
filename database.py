@@ -266,7 +266,7 @@ def get_user_channels(user_id: int):
             WHERE user_id = %s
               AND subscription_status = 'active'
             ORDER BY channel;
-        """)
+        """, (user_id,))
 
         return cursor.fetchall()
 
