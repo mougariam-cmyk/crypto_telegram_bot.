@@ -1115,7 +1115,7 @@ ONBOARDING_INTRO_TEXT = {
 # Keep the same premium introduction concept for languages whose full localized
 # copy is not yet provided; English is used rather than inventing poor translations.
 for _code in ONBOARDING_LANGUAGES:
-    ONBOARDING_INTRO.setdefault(_code, ONBOARDING_INTRO["en"])
+    ONBOARDING_INTRO_TEXT.setdefault(_code, ONBOARDING_INTRO_TEXT["en"])
 
 async def show_language_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
