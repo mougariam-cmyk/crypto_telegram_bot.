@@ -111,10 +111,98 @@ threading.Thread(target=run_health_check_server, daemon=True).start()
 (
     MAIN_MENU, PLAN_SELECT, COIN_NAME, COIN_DESC, CONTRACT, 
     BUY_LINK, CHANNEL, VERIFY_ADMIN, MSG_PER_HOUR, LINK_RATIO, ENABLE_NEW_BUY, 
-    EDIT_SELECT_CHANNEL, EDIT_OPTIONS_MENU, CONFIRM_CANCEL_SUB, NETWORK, CONTENT_PREFS
-) = range(16)
+    EDIT_SELECT_CHANNEL, EDIT_OPTIONS_MENU, CONFIRM_CANCEL_SUB, NETWORK, X_LINK, CONTENT_PREFS
+) = range(17)
 
 ACTIVE_PUBLISH_TASKS = {}
+
+# ==========================================
+# PRIVATE SETUP FLOW CLEANUP / MENU
+# ==========================================
+FLOW_MESSAGE_IDS_KEY = "_flow_message_ids"
+
+
+def _flow_ids(context):
+    return context.user_data.setdefault(FLOW_MESSAGE_IDS_KEY, set())
+
+
+def track_flow_message(context, message_id):
+    if message_id:
+        _flow_ids(context).add(int(message_id))
+
+
+def track_flow_update(update, context):
+    """Track private setup messages so the Menu action can clean them up."""
+    if update.effective_chat and update.effective_chat.type == "private":
+        if update.effective_message:
+            track_flow_message(context, update.effective_message.message_id)
+        if update.callback_query and update.callback_query.message:
+            track_flow_message(context, update.callback_query.message.message_id)
+
+
+def add_menu_button(reply_markup=None):
+    rows = []
+    if reply_markup:
+        rows = [list(row) for row in reply_markup.inline_keyboard]
+    if not any(any(getattr(btn, "callback_data", None) == "menu_home" for btn in row) for row in rows):
+        rows.append([InlineKeyboardButton("🏠 Menu", callback_data="menu_home")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def send_flow_reply(update, context, text, reply_markup=None, **kwargs):
+    """Send a setup-flow message and remember it for cleanup."""
+    markup = add_menu_button(reply_markup)
+    message = await update.message.reply_text(text, reply_markup=markup, **kwargs)
+    track_flow_message(context, message.message_id)
+    return message
+
+
+async def edit_flow_message(query, context, text, reply_markup=None, **kwargs):
+    """Edit a setup message while ensuring it always has a Menu button."""
+    if query and query.message:
+        track_flow_message(context, query.message.message_id)
+    markup = add_menu_button(reply_markup)
+    return await query.edit_message_text(text, reply_markup=markup, **kwargs)
+
+
+async def cleanup_private_flow(update, context):
+    """Best-effort deletion of the current setup conversation's old messages."""
+    chat = update.effective_chat
+    if not chat or chat.type != "private":
+        return
+
+    ids = set(_flow_ids(context))
+    keep_id = None
+    if update.callback_query and update.callback_query.message:
+        keep_id = update.callback_query.message.message_id
+    elif update.effective_message:
+        keep_id = update.effective_message.message_id
+    if keep_id:
+        ids.discard(keep_id)
+
+    # Telegram imposes deletion limits; delete individually and ignore messages
+    # that are already gone or cannot legally be deleted.
+    for message_id in sorted(ids):
+        try:
+            await context.bot.delete_message(chat_id=chat.id, message_id=message_id)
+        except Exception:
+            pass
+
+    context.user_data.pop(FLOW_MESSAGE_IDS_KEY, None)
+
+
+async def menu_home_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await cleanup_private_flow(update, context)
+    # Start from a clean state and present the real main menu.
+    return await start(update, context)
+
+
+async def flow_message_tracker(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Runs before the conversation handlers and only records IDs; it never
+    # consumes the update.
+    track_flow_update(update, context)
 
 BUY_TEMPLATES = [
     "🚀 NEW BUY DETECTED!\n\n💎 Token: {coin_name}\n💰 Amount: ${amount}\n🛒 Buy Here: {buy_link}\n📜 Contract: {contract}\n\n🔥 Whales are accumulating!",
@@ -539,8 +627,22 @@ def choose_central_post(data):
 
 
 def generate_post(data):
-    # fallback_db.py is the separate Community Hype layer.
-    if random.random() < COMMUNITY_HYPE_PROBABILITY:
+    # Simulated buy alerts are an optional promotional layer. They are explicitly
+    # labeled SIMULATED so they are not presented as real blockchain transactions.
+    if data.get('enable_new_buy') and random.random() < 0.20:
+        template = random.choice(BUY_TEMPLATES)
+        amount = random.choice([250, 500, 750, 1000, 2500, 5000])
+        post_text = (
+            "🧪 SIMULATED BUY ALERT\n\n"
+            + template.format(
+                coin_name=data.get('coin_name', 'Token'),
+                amount=f"{amount:,}",
+                buy_link=data.get('buy_link', ''),
+                contract=data.get('contract', ''),
+                channel=data.get('channel', ''),
+            )
+        )
+    elif random.random() < COMMUNITY_HYPE_PROBABILITY:
         post_text=get_fallback_message(data)
     else:
         post_text=choose_central_post(data) or get_fallback_message(data)
@@ -716,7 +818,7 @@ Important:
 """
 
     last_error = None
-    clients = get_group_gemini_clients_in_rotation()
+    clients = get_group_gemini_clients_in_rotation()[:3]
 
     logging.info(
         f"Generating AI group reply for @{member_name}: {member_message[:120]}"
@@ -724,7 +826,8 @@ Important:
 
     for attempt, client in enumerate(clients, start=1):
         try:
-            response = client.models.generate_content(
+            response = await asyncio.to_thread(
+                client.models.generate_content,
                 model="gemini-3.6-flash",
                 contents=prompt,
             )
@@ -793,9 +896,10 @@ Do not classify a general crypto word like 'coin' by itself as OTHER_COIN.
 """
 
     # Moderation also belongs to the group-AI pool (keys 2-4), never key 1.
-    for attempt, client in enumerate(get_group_gemini_clients_in_rotation(), start=1):
+    for attempt, client in enumerate(get_group_gemini_clients_in_rotation()[:2], start=1):
         try:
-            response = client.models.generate_content(
+            response = await asyncio.to_thread(
+                client.models.generate_content,
                 model="gemini-3.6-flash",
                 contents=prompt,
             )
@@ -914,9 +1018,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "What would you like to do today?"
         )
         if update.message:
-            await update.message.reply_text(msg, reply_markup=reply_markup)
+            await send_flow_reply(update, context, msg, reply_markup=reply_markup)
         else:
-            await update.callback_query.edit_message_text(msg, reply_markup=reply_markup)
+            await edit_flow_message(update.callback_query, context, msg, reply_markup=reply_markup)
         return MAIN_MENU
     else:
         return await show_subscription_plans(update, context)
@@ -937,9 +1041,9 @@ async def show_subscription_plans(update: Update, context: ContextTypes.DEFAULT_
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     if update.callback_query:
-        await update.callback_query.edit_message_text(welcome_msg, reply_markup=reply_markup)
+        await edit_flow_message(update.callback_query, context, welcome_msg, reply_markup=reply_markup)
     else:
-        await update.message.reply_text(welcome_msg, reply_markup=reply_markup)
+        await send_flow_reply(update, context, welcome_msg, reply_markup=reply_markup)
     return PLAN_SELECT
 
 async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -960,7 +1064,7 @@ async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton("🔙 Back", callback_data='back_to_main')])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text("⚙️ Select the channel you want to edit:", reply_markup=reply_markup)
+        await edit_flow_message(query, context, "⚙️ Select the channel you want to edit:", reply_markup=reply_markup)
         return EDIT_SELECT_CHANNEL
 
 async def show_edit_options(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -977,18 +1081,20 @@ async def show_edit_options(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"2️⃣ Description: {data.get('coin_desc', 'Not set')}\n"
         f"3️⃣ Contract (CA): {data.get('contract', 'Not set')}\n"
         f"4️⃣ Buy Link: {data.get('buy_link', 'Not set')}\n"
-        f"5️⃣ Network: {data.get('network', 'Not set')}\n"
-        f"6️⃣ Geopolitical News: {'Yes' if data.get('receive_geopolitical_news', True) else 'No'}\n"
-        f"7️⃣ Markets/Economy News: {'Yes' if data.get('receive_market_news', True) else 'No'}\n"
-        f"8️⃣ Posts Frequency: {posts_freq}\n"
-        f"9️⃣ Posts with Links Ratio: {data.get('link_ratio', 100)}%\n"
-        f"🔟 Simulated Buy Alerts: {'Enabled' if data.get('enable_new_buy') else 'Disabled'}\n\n"
+        f"5️⃣ X / Twitter: {data.get('x_link', 'Not set')}\n"
+        f"6️⃣ Network: {data.get('network', 'Not set')}\n"
+        f"7️⃣ Geopolitical News: {'Yes' if data.get('receive_geopolitical_news', True) else 'No'}\n"
+        f"8️⃣ Markets/Economy News: {'Yes' if data.get('receive_market_news', True) else 'No'}\n"
+        f"9️⃣ Posts Frequency: {posts_freq}\n"
+        f"🔟 Posts with Links Ratio: {data.get('link_ratio', 100)}%\n"
+        f"1️⃣1️⃣ Simulated Buy Alerts: {'Enabled' if data.get('enable_new_buy') else 'Disabled'}\n\n"
         "👇 Select an option below to update or cancel:"
     )
 
     keyboard = [
         [InlineKeyboardButton("🪙 Edit Coin Name", callback_data='opt_coin_name'), InlineKeyboardButton("📝 Edit Description", callback_data='opt_coin_desc')],
         [InlineKeyboardButton("📜 Edit Contract (CA)", callback_data='opt_contract'), InlineKeyboardButton("🛒 Edit Buy Link", callback_data='opt_buy_link')],
+        [InlineKeyboardButton("🐦 Edit X / Twitter", callback_data='opt_x_link')],
         [InlineKeyboardButton("🌐 Edit Network", callback_data='opt_network')],
         [InlineKeyboardButton("🌍 Geopolitical News", callback_data='opt_geo_news')],
         [InlineKeyboardButton("📊 Markets/Economy News", callback_data='opt_market_news')],
@@ -1004,7 +1110,7 @@ async def show_edit_options(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
     else:
-        await update.message.reply_text(text, reply_markup=reply_markup)
+        await send_flow_reply(update, context, text, reply_markup=reply_markup)
     return EDIT_OPTIONS_MENU
 
 async def select_channel_to_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1023,7 +1129,7 @@ async def select_channel_to_edit(update: Update, context: ContextTypes.DEFAULT_T
         context.user_data['is_editing'] = True
         return await show_edit_options(update, context)
     else:
-        await query.edit_message_text("❌ Channel config not found.")
+        await edit_flow_message(query, context, "❌ Channel config not found.")
         return ConversationHandler.END
 
 async def edit_options_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1036,38 +1142,42 @@ async def edit_options_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if data == 'opt_coin_name':
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_edit_menu')]])
-        await query.edit_message_text("1️⃣ Send your new Token / Coin Name (e.g., HIPPO):", reply_markup=keyboard)
+        await edit_flow_message(query, context, "1️⃣ Send your new Token / Coin Name (e.g., HIPPO):", reply_markup=keyboard)
         return COIN_NAME
     elif data == 'opt_coin_desc':
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_edit_menu')]])
-        await query.edit_message_text("2️⃣ Send a new Description / Hype Points for your token:", reply_markup=keyboard)
+        await edit_flow_message(query, context, "2️⃣ Send a new Description / Hype Points for your token:", reply_markup=keyboard)
         return COIN_DESC
     elif data == 'opt_contract':
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_edit_menu')]])
-        await query.edit_message_text("3️⃣ Send your new Token Contract Address (CA):", reply_markup=keyboard)
+        await edit_flow_message(query, context, "3️⃣ Send your new Token Contract Address (CA):", reply_markup=keyboard)
         return CONTRACT
     elif data == 'opt_buy_link':
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_edit_menu')]])
-        await query.edit_message_text("4️⃣ Send your new DEXScreener or Buy Link:", reply_markup=keyboard)
+        await edit_flow_message(query, context, "4️⃣ Send your new DEXScreener or Buy Link:", reply_markup=keyboard)
         return BUY_LINK
+    elif data == 'opt_x_link':
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⏭️ Skip / Clear X Link", callback_data='xlink_skip_edit')], [InlineKeyboardButton("🔙 Back", callback_data='back_to_edit_menu')]])
+        await edit_flow_message(query, context, "5️⃣ Send your official X / Twitter link (e.g., https://x.com/yourproject):", reply_markup=add_menu_button(keyboard))
+        return X_LINK
     elif data == 'opt_network':
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_edit_menu')]])
-        await query.edit_message_text("5️⃣ Send the blockchain network / ecosystem of the token (e.g., BNB, Solana, Sui):", reply_markup=keyboard)
+        await edit_flow_message(query, context, "6️⃣ Select the blockchain network / ecosystem of the token:", reply_markup=add_menu_button(keyboard))
         return NETWORK
     elif data == 'opt_geo_news':
         keyboard=[[InlineKeyboardButton("Yes 🌍",callback_data='geo_edit_yes'),InlineKeyboardButton("No 🚫",callback_data='geo_edit_no')],[InlineKeyboardButton("🔙 Back",callback_data='back_to_edit_menu')]]
-        await query.edit_message_text("Receive geopolitical news?",reply_markup=InlineKeyboardMarkup(keyboard))
+        await edit_flow_message(query, context, "Receive geopolitical news?",reply_markup=InlineKeyboardMarkup(keyboard))
         return CONTENT_PREFS
     elif data == 'opt_market_news':
         keyboard=[[InlineKeyboardButton("Yes 📊",callback_data='market_edit_yes'),InlineKeyboardButton("No 🚫",callback_data='market_edit_no')],[InlineKeyboardButton("🔙 Back",callback_data='back_to_edit_menu')]]
-        await query.edit_message_text("Receive markets & economy news?",reply_markup=InlineKeyboardMarkup(keyboard))
+        await edit_flow_message(query, context, "Receive markets & economy news?",reply_markup=InlineKeyboardMarkup(keyboard))
         return CONTENT_PREFS
     elif data == 'opt_msg_hour':
         if context.user_data.get('selected_plan') == 'free':
             await query.answer("⚠️ Free Plan is restricted to 4 posts/day maximum. Upgrade to Premium!", show_alert=True)
             return EDIT_OPTIONS_MENU
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_edit_menu')]])
-        await query.edit_message_text("8️⃣ How many posts per hour do you want? (1 to 20):", reply_markup=keyboard)
+        await edit_flow_message(query, context, "8️⃣ How many posts per hour do you want? (1 to 20):", reply_markup=keyboard)
         return MSG_PER_HOUR
     elif data == 'opt_ratio':
         keyboard = [
@@ -1075,7 +1185,7 @@ async def edit_options_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             [InlineKeyboardButton("75%", callback_data='ratio_75'), InlineKeyboardButton("100%", callback_data='ratio_100')],
             [InlineKeyboardButton("🔙 Back", callback_data='back_to_edit_menu')]
         ]
-        await query.edit_message_text("9️⃣ Select the percentage of posts that should include Buy Links & Contract:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await edit_flow_message(query, context, "9️⃣ Select the percentage of posts that should include Buy Links & Contract:", reply_markup=InlineKeyboardMarkup(keyboard))
         return LINK_RATIO
     elif data == 'opt_new_buy':
         keyboard = [
@@ -1083,12 +1193,12 @@ async def edit_options_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             [InlineKeyboardButton("No 🤖 (AI Posts Only)", callback_data='newbuy_no')],
             [InlineKeyboardButton("🔙 Back", callback_data='back_to_edit_menu')]
         ]
-        await query.edit_message_text("🔟 Would you like to enable Simulated New Buy Alerts?", reply_markup=InlineKeyboardMarkup(keyboard))
+        await edit_flow_message(query, context, "🔟 Would you like to enable Simulated New Buy Alerts?", reply_markup=InlineKeyboardMarkup(keyboard))
         return ENABLE_NEW_BUY
     elif data == 'opt_edit_all':
         context.user_data['is_editing'] = False
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_edit_menu')]])
-        await query.edit_message_text("1️⃣ Send your new Token / Coin Name:", reply_markup=keyboard)
+        await edit_flow_message(query, context, "1️⃣ Send your new Token / Coin Name:", reply_markup=keyboard)
         return COIN_NAME
     elif data == 'opt_cancel_sub':
         channel = context.user_data.get('channel', '')
@@ -1097,7 +1207,7 @@ async def edit_options_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             [InlineKeyboardButton("NO, Keep Publishing 🚀", callback_data='confirm_cancel_no')],
             [InlineKeyboardButton("🔙 Back", callback_data='back_to_edit_menu')]
         ]
-        await query.edit_message_text(f"⚠️ Are you sure you want to cancel your campaign for {channel}?", reply_markup=InlineKeyboardMarkup(keyboard))
+        await edit_flow_message(query, context, f"⚠️ Are you sure you want to cancel your campaign for {channel}?", reply_markup=InlineKeyboardMarkup(keyboard))
         return CONFIRM_CANCEL_SUB
     elif data == 'opt_save_finish':
         return await finish_setup(update, context)
@@ -1119,7 +1229,7 @@ async def confirm_cancel_sub_handler(update: Update, context: ContextTypes.DEFAU
             ACTIVE_PUBLISH_TASKS[channel].cancel()
             del ACTIVE_PUBLISH_TASKS[channel]
 
-        await query.edit_message_text(f"🛑 Subscription Cancelled! Auto-publishing for channel {channel} has been stopped.")
+        await edit_flow_message(query, context, f"🛑 Subscription Cancelled! Auto-publishing for channel {channel} has been stopped.")
         return ConversationHandler.END
 
 async def plan_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1140,7 +1250,7 @@ async def plan_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "1️⃣ Send your Token / Coin Name (e.g., HIPPO):"
     )
     
-    await query.edit_message_text(msg, reply_markup=keyboard)
+    await edit_flow_message(query, context, msg, reply_markup=keyboard)
     return COIN_NAME
 
 async def back_to_edit_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1172,7 +1282,7 @@ async def get_coin_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await show_edit_options(update, context)
     
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_coin_name')]])
-    await update.message.reply_text("2️⃣ Send a brief Description / Hype Points for your token:", reply_markup=keyboard)
+    await send_flow_reply(update, context, "2️⃣ Send a brief Description / Hype Points for your token:", reply_markup=keyboard)
     return COIN_DESC
 
 async def get_coin_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1181,7 +1291,7 @@ async def get_coin_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await show_edit_options(update, context)
         
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_coin_desc')]])
-    await update.message.reply_text("3️⃣ Send your Token Contract Address (CA):", reply_markup=keyboard)
+    await send_flow_reply(update, context, "3️⃣ Send your Token Contract Address (CA):", reply_markup=keyboard)
     return CONTRACT
 
 async def get_contract(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1190,18 +1300,47 @@ async def get_contract(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await show_edit_options(update, context)
         
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_contract')]])
-    await update.message.reply_text("4️⃣ Send your DEXScreener or Buy Link:", reply_markup=keyboard)
+    await send_flow_reply(update, context, "4️⃣ Send your DEXScreener or Buy Link:", reply_markup=keyboard)
     return BUY_LINK
 
 async def get_buy_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['buy_link'] = update.message.text.strip()
-    
+
+    if context.user_data.get('is_editing'):
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⏭️ Skip / Clear X Link", callback_data='xlink_skip_edit')], [InlineKeyboardButton("🔙 Back", callback_data='back_to_edit_menu')]])
+        await send_flow_reply(update, context, "5️⃣ Send your official X / Twitter link (e.g., https://x.com/yourproject):", reply_markup=keyboard)
+        return X_LINK
+
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⏭️ Skip", callback_data='xlink_skip')], [InlineKeyboardButton("🔙 Back", callback_data='back_to_buy_link')]])
+    await send_flow_reply(update, context, "5️⃣ Send your official X / Twitter link (e.g., https://x.com/yourproject). This is optional:", reply_markup=keyboard)
+    return X_LINK
+
+
+async def get_x_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['x_link'] = update.message.text.strip()
     if context.user_data.get('is_editing'):
         return await show_edit_options(update, context)
-
     keyboard=[[InlineKeyboardButton("Yes 🌍",callback_data='geo_yes'),InlineKeyboardButton("No 🚫",callback_data='geo_no')],[InlineKeyboardButton("🔙 Back",callback_data='back_to_buy_link')]]
-    await update.message.reply_text("🌍 Would you like to receive geopolitical news that may affect markets in this group?",reply_markup=InlineKeyboardMarkup(keyboard))
+    await send_flow_reply(update, context, "🌍 Would you like to receive geopolitical news that may affect markets in this group?", reply_markup=InlineKeyboardMarkup(keyboard))
     return CONTENT_PREFS
+
+
+async def x_link_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query=update.callback_query
+    await query.answer()
+    if query.data in ('xlink_skip_edit',):
+        context.user_data['x_link'] = ''
+        return await show_edit_options(update, context)
+    if query.data == 'xlink_skip':
+        context.user_data['x_link'] = ''
+        keyboard=[[InlineKeyboardButton("Yes 🌍",callback_data='geo_yes'),InlineKeyboardButton("No 🚫",callback_data='geo_no')],[InlineKeyboardButton("🔙 Back",callback_data='back_to_buy_link')]]
+        await edit_flow_message(query, context, "🌍 Would you like to receive geopolitical news that may affect markets in this group?", reply_markup=add_menu_button(InlineKeyboardMarkup(keyboard)))
+        return CONTENT_PREFS
+    if query.data == 'back_to_buy_link':
+        keyboard=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",callback_data='back_to_contract')]])
+        await edit_flow_message(query, context, "4️⃣ Send your DEXScreener or Buy Link:", reply_markup=add_menu_button(keyboard))
+        return BUY_LINK
+    return X_LINK
 
 async def get_content_preferences(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query=update.callback_query
@@ -1219,15 +1358,15 @@ async def get_content_preferences(update: Update, context: ContextTypes.DEFAULT_
         return await show_edit_options(update, context)
     elif d=='back_to_buy_link':
         keyboard=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",callback_data='back_to_content_prefs')]])
-        await query.edit_message_text("4️⃣ Send your DEXScreener or Buy Link:",reply_markup=keyboard)
+        await edit_flow_message(query, context, "4️⃣ Send your DEXScreener or Buy Link:",reply_markup=keyboard)
         return BUY_LINK
     elif d=='back_to_content_prefs':
         keyboard=[[InlineKeyboardButton("Yes 🌍",callback_data='geo_yes'),InlineKeyboardButton("No 🚫",callback_data='geo_no')],[InlineKeyboardButton("🔙 Back",callback_data='back_to_buy_link')]]
-        await query.edit_message_text("🌍 Would you like to receive geopolitical news that may affect markets in this group?",reply_markup=InlineKeyboardMarkup(keyboard))
+        await edit_flow_message(query, context, "🌍 Would you like to receive geopolitical news that may affect markets in this group?",reply_markup=InlineKeyboardMarkup(keyboard))
         return CONTENT_PREFS
     elif d=='back_to_market_pref':
         keyboard=[[InlineKeyboardButton("Yes 📊",callback_data='market_yes'),InlineKeyboardButton("No 🚫",callback_data='market_no')],[InlineKeyboardButton("🔙 Back",callback_data='back_to_content_prefs')]]
-        await query.edit_message_text("📊 Would you like to receive markets & economy news?",reply_markup=InlineKeyboardMarkup(keyboard))
+        await edit_flow_message(query, context, "📊 Would you like to receive markets & economy news?",reply_markup=InlineKeyboardMarkup(keyboard))
         return CONTENT_PREFS
     else:
         return CONTENT_PREFS
@@ -1235,7 +1374,7 @@ async def get_content_preferences(update: Update, context: ContextTypes.DEFAULT_
         return await finish_setup(update, context)
     if d in ('geo_yes','geo_no'):
         keyboard=[[InlineKeyboardButton("Yes 📊",callback_data='market_yes'),InlineKeyboardButton("No 🚫",callback_data='market_no')],[InlineKeyboardButton("🔙 Back",callback_data='back_to_content_prefs')]]
-        await query.edit_message_text("📊 Would you like to receive markets & economy news in this group?\n\nExamples: interest rates, inflation, jobs and major economic data.",reply_markup=InlineKeyboardMarkup(keyboard))
+        await edit_flow_message(query, context, "📊 Would you like to receive markets & economy news in this group?\n\nExamples: interest rates, inflation, jobs and major economic data.",reply_markup=InlineKeyboardMarkup(keyboard))
         return CONTENT_PREFS
     keyboard = [
         [
@@ -1254,7 +1393,7 @@ async def get_content_preferences(update: Update, context: ContextTypes.DEFAULT_
         ],
         [InlineKeyboardButton("🔙 Back", callback_data='back_to_market_pref')],
     ]
-    await query.edit_message_text(
+    await edit_flow_message(query, context, 
         "🌐 Blockchain network / ecosystem (optional).\n\n"
         "Select a network below. You can also choose SKIP; this will NOT block registration "
         "and the group will receive posts from all supported networks.",
@@ -1274,7 +1413,7 @@ async def get_network_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
              InlineKeyboardButton("No 🚫", callback_data='market_no')],
             [InlineKeyboardButton("🔙 Back", callback_data='back_to_content_prefs')]
         ]
-        await query.edit_message_text(
+        await edit_flow_message(query, context, 
             "📊 Would you like to receive markets & economy news?",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
@@ -1300,7 +1439,7 @@ async def get_network_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_network_input')]])
     selected_label = selected if selected else 'All supported networks'
-    await query.edit_message_text(
+    await edit_flow_message(query, context, 
         f"✅ Network selected: {selected_label}\n\n"
         "7️⃣ Send your Channel Username (e.g., @mychannel) or Channel Link (e.g., https://t.me/mychannel):",
         reply_markup=keyboard
@@ -1317,7 +1456,7 @@ async def get_network(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await show_edit_options(update, context)
 
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_network_input')]])
-    await update.message.reply_text(
+    await send_flow_reply(update, context, 
         "7️⃣ Send your Channel Username (e.g., @mychannel) or Channel Link (e.g., https://t.me/mychannel):",
         reply_markup=keyboard
     )
@@ -1354,7 +1493,7 @@ async def get_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await update.message.reply_text(msg, reply_markup=reply_markup)
+    await send_flow_reply(update, context, msg, reply_markup=reply_markup)
     return VERIFY_ADMIN
 
 async def verify_admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1363,7 +1502,7 @@ async def verify_admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE
     if query.data == 'back_to_channel_input':
         await query.answer()
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_buy_link')]])
-        await query.edit_message_text(
+        await edit_flow_message(query, context, 
             "7️⃣ Send your Channel Username or Link (e.g., @mychannel):",
             reply_markup=keyboard
         )
@@ -1377,7 +1516,7 @@ async def verify_admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE
     bot_id = context.bot.id
 
     if not channel_id:
-        await query.edit_message_text(
+        await edit_flow_message(query, context, 
             "❌ Channel information is missing. Please enter the channel again.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_channel_input')]])
         )
@@ -1397,14 +1536,14 @@ async def verify_admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE
                     [InlineKeyboardButton("75%", callback_data='ratio_75'), InlineKeyboardButton("100%", callback_data='ratio_100')],
                     [InlineKeyboardButton("🔙 Back", callback_data='back_to_verify_admin')]
                 ]
-                await query.edit_message_text(
+                await edit_flow_message(query, context, 
                     "✅ Admin Status Verified!\n\n9️⃣ What percentage of posts should contain Buy Links & Contract?",
                     reply_markup=InlineKeyboardMarkup(keyboard)
                 )
                 return LINK_RATIO
 
             keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_verify_admin')]])
-            await query.edit_message_text(
+            await edit_flow_message(query, context, 
                 "✅ Admin Status Verified!\n\n8️⃣ How many posts per hour do you want? (1 to 20):",
                 reply_markup=keyboard
             )
@@ -1447,7 +1586,7 @@ async def get_msg_per_hour(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("75%", callback_data='ratio_75'), InlineKeyboardButton("100%", callback_data='ratio_100')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("9️⃣ What percentage of posts should contain Buy Links & Contract?", reply_markup=reply_markup)
+    await send_flow_reply(update, context, "9️⃣ What percentage of posts should contain Buy Links & Contract?", reply_markup=reply_markup)
     return LINK_RATIO
 
 async def get_link_ratio(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1469,7 +1608,7 @@ async def get_link_ratio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔗 I have promoted the bot / Continue", callback_data='verify_admin')],
             [InlineKeyboardButton("🔙 Back", callback_data='back_to_channel_input')]
         ]
-        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+        await edit_flow_message(query, context, msg, reply_markup=InlineKeyboardMarkup(keyboard))
         return VERIFY_ADMIN
 
     ratio = int(query.data.replace('ratio_', ''))
@@ -1484,7 +1623,7 @@ async def get_link_ratio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🔙 Back", callback_data='back_to_link_ratio')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text("🔟 Would you like to enable Simulated New Buy Alerts?", reply_markup=reply_markup)
+    await edit_flow_message(query, context, "🔟 Would you like to enable Simulated New Buy Alerts?", reply_markup=reply_markup)
     return ENABLE_NEW_BUY
 
 async def get_enable_new_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1496,11 +1635,15 @@ async def get_enable_new_buy(update: Update, context: ContextTypes.DEFAULT_TYPE)
             [InlineKeyboardButton("0%", callback_data='ratio_0'), InlineKeyboardButton("25%", callback_data='ratio_25'), InlineKeyboardButton("50%", callback_data='ratio_50')],
             [InlineKeyboardButton("75%", callback_data='ratio_75'), InlineKeyboardButton("100%", callback_data='ratio_100')]
         ]
-        await query.edit_message_text("9️⃣ What percentage of posts should contain Buy Links & Contract?", reply_markup=InlineKeyboardMarkup(keyboard))
+        await edit_flow_message(query, context, "9️⃣ What percentage of posts should contain Buy Links & Contract?", reply_markup=InlineKeyboardMarkup(keyboard))
         return LINK_RATIO
+
+    if query.data not in ('newbuy_yes', 'newbuy_no'):
+        return ENABLE_NEW_BUY
 
     enable_buy = (query.data == 'newbuy_yes')
     context.user_data['enable_new_buy'] = enable_buy
+    await query.answer("✅ Simulated Buy Alerts enabled" if enable_buy else "ℹ️ Simulated Buy Alerts disabled", show_alert=False)
 
     user_id = query.from_user.id
     username = query.from_user.username or "Unknown"
@@ -1526,7 +1669,7 @@ async def get_enable_new_buy(update: Update, context: ContextTypes.DEFAULT_TYPE)
         [InlineKeyboardButton("🏠 Main Menu", callback_data='back_to_main')]
     ])
 
-    await query.edit_message_text(success_text, reply_markup=keyboard)
+    await edit_flow_message(query, context, success_text, reply_markup=keyboard)
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -1538,7 +1681,7 @@ async def finish_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_user_data(user_id, username, context.user_data)
     restart_all_active_tasks(context.application)
     
-    await query.edit_message_text("✅ Settings updated and saved successfully! 🚀", reply_markup=InlineKeyboardMarkup([
+    await edit_flow_message(query, context, "✅ Settings updated and saved successfully! 🚀", reply_markup=InlineKeyboardMarkup([
         [InlineKeyboardButton("🏠 Main Menu", callback_data='back_to_main')]
     ]))
     context.user_data.clear()
@@ -1612,7 +1755,8 @@ if __name__ == '__main__':
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler('start', start),
-            CallbackQueryHandler(start, pattern='^back_to_main$')
+            CallbackQueryHandler(start, pattern='^back_to_main$'),
+            CallbackQueryHandler(main_menu_handler, pattern='^menu_edit_existing$')
         ],
         states={
             MAIN_MENU: [
@@ -1642,6 +1786,11 @@ if __name__ == '__main__':
                 MessageHandler(filters.TEXT & ~filters.COMMAND, get_buy_link),
                 CallbackQueryHandler(back_to_edit_menu_handler, pattern='^back_to_edit_menu$'),
                 CallbackQueryHandler(get_contract, pattern='^back_to_buy_link$')
+            ],
+            X_LINK: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_x_link),
+                CallbackQueryHandler(x_link_callback, pattern='^(xlink_.*|back_to_buy_link)$'),
+                CallbackQueryHandler(back_to_edit_menu_handler, pattern='^back_to_edit_menu$')
             ],
             CONTENT_PREFS: [
                 CallbackQueryHandler(get_content_preferences, pattern='^(geo_|market_|back_to_content_prefs|back_to_market_pref|back_to_edit_menu|back_to_buy_link)')
@@ -1686,11 +1835,20 @@ if __name__ == '__main__':
                 CallbackQueryHandler(show_edit_options, pattern='^confirm_cancel_no$')
             ]
         },
-        fallbacks=[CommandHandler('cancel', lambda u, c: c.application.create_task(start(u, c)))],
+        fallbacks=[
+            CallbackQueryHandler(menu_home_handler, pattern='^menu_home$'),
+            CommandHandler('cancel', lambda u, c: c.application.create_task(start(u, c)))
+        ],
         per_user=True
     )
 
     application.add_handler(conv_handler)
+
+    # Track private setup messages without consuming them. This lets the Menu
+    # button perform best-effort cleanup of the current setup flow.
+    application.add_handler(CallbackQueryHandler(flow_message_tracker, pattern='.*', block=False), group=-1)
+    application.add_handler(MessageHandler(filters.ALL, flow_message_tracker, block=False), group=-1)
+    application.add_handler(CallbackQueryHandler(menu_home_handler, pattern='^menu_home$'), group=2)
 
     # Community interaction handlers: these do not alter the existing setup flow.
     application.add_handler(
