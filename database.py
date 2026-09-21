@@ -53,6 +53,15 @@ def init_db():
             );
         """)
 
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS bot_profiles (
+                user_id BIGINT PRIMARY KEY,
+                language TEXT DEFAULT 'en',
+                onboarding_seen INTEGER DEFAULT 0,
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            );
+        """)
+
         # Migration for databases created with the older schema.
         cursor.execute("""
             ALTER TABLE users
@@ -225,6 +234,57 @@ def save_user_data(user_id: int, username: str, data: dict):
 
         conn.commit()
 
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def get_user_start_state(user_id: int):
+    """Return active channels plus lightweight first-run onboarding state in one DB call."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            SELECT channel, coin_name
+            FROM users
+            WHERE user_id = %s
+              AND subscription_status = 'active'
+            ORDER BY channel;
+        """, (user_id,))
+        channels = cursor.fetchall()
+
+        cursor.execute("""
+            SELECT language, onboarding_seen
+            FROM bot_profiles
+            WHERE user_id = %s;
+        """, (user_id,))
+        profile = cursor.fetchone()
+
+        return {
+            "channels": channels,
+            "language": profile[0] if profile else "en",
+            "onboarding_seen": bool(profile[1]) if profile else False,
+        }
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def save_onboarding_profile(user_id: int, language: str):
+    """Persist the user's first-run language and onboarding completion."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO bot_profiles (user_id, language, onboarding_seen, updated_at)
+            VALUES (%s, %s, 1, NOW())
+            ON CONFLICT (user_id)
+            DO UPDATE SET
+                language = EXCLUDED.language,
+                onboarding_seen = 1,
+                updated_at = NOW();
+        """, (user_id, language))
+        conn.commit()
     finally:
         cursor.close()
         conn.close()
