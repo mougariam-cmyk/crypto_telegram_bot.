@@ -95,6 +95,11 @@ COMMUNITY_TEMPLATES = [
     "🌙 GN to all {coin_name} believers! Big things are coming tomorrow! ✨"
 ]
 
+# Recent AI posts kept in memory to help Gemini avoid repeating the same
+# wording, question, hook, or structure during the current bot session.
+RECENT_AI_POSTS = {}
+MAX_RECENT_AI_POSTS = 12
+
 FREE_PLAN_AD_TEXT = "\n\n🤖 Powered by Django AI — Affordable AI tools for your crypto project!"
 
 FREE_PLAN_FOOTER_BUTTONS = InlineKeyboardMarkup([
@@ -125,34 +130,112 @@ def generate_ai_post(data, include_links=True):
         client = get_next_gemini_client()
         if not client:
             return get_fallback_message(data)
-            
+
+        channel_key = data.get('channel', 'default')
+        recent_posts = RECENT_AI_POSTS.get(channel_key, [])
+        recent_text = "\n---\n".join(recent_posts[-MAX_RECENT_AI_POSTS:])
+
+        content_angles = [
+            "ask the community a direct question",
+            "create a prediction challenge",
+            "ask holders to choose between two options",
+            "start a short debate or controversial-but-fair discussion",
+            "address OG holders specifically",
+            "welcome or challenge new holders",
+            "create a mini game or quick challenge",
+            "ask members about their personal target or goal",
+            "use a curiosity-driven hook",
+            "tell a very short project-related story",
+            "ask members to react with an emoji and explain why",
+            "create a myth-vs-reality style discussion",
+            "ask a hypothetical what-if question",
+            "make a short holder roll-call post",
+            "create a concise community rally post",
+            "ask members what they want to see next from the project",
+            "make a one-line punchy engagement post"
+        ]
+
+        angle = random.choice(content_angles)
+
         if include_links:
             prompt = f"""
-Write a short, high-energy, hyped promotional post for a crypto token named {data['coin_name']}.
-Project Details / Description: {data.get('coin_desc', 'Top crypto gem on the market')}
-Use exciting crypto emojis.
-Include these exact details:
-Buy Link (DEXScreener): {data['buy_link']}
+You are the creative social-media content engine for a crypto community.
+
+Create ONE completely fresh promotional/community post for:
+Token: {data['coin_name']}
+Project description: {data.get('coin_desc', 'Crypto community project')}
+
+This post MUST be substantially different from typical generic crypto promotion.
+Chosen content angle: {angle}
+
+The goal is genuine community interaction: make members want to reply, discuss,
+vote with their opinion, or react. You may ask a strong question or create a
+challenge, but do not make false factual claims, fake partnerships, fake
+transactions, fake whale activity, guaranteed profits, or guaranteed price
+predictions.
+
+You may naturally include these exact project details when relevant:
+Buy Link: {data['buy_link']}
 Contract Address: {data['contract']}
 Telegram Channel: {data['channel']}
-Keep it concise, hype-driven, and under 4 lines. Output in English only. Do not use markdown asterisk stars.
+
+Rules:
+- English only.
+- Use natural crypto-community language and emojis.
+- Vary the structure, opening, sentence length, and CTA.
+- Do NOT always start with an emoji, the token name, "GM", "BREAKING", or "🚀".
+- Do NOT always ask about price.
+- Do NOT copy or closely imitate the previous posts below.
+- Keep it concise, normally 2-6 short lines.
+- Do not use markdown asterisk stars.
+- Output ONLY the final post.
+
+Previous posts to avoid repeating:
+{recent_text if recent_text else "No previous posts available."}
 """
         else:
             prompt = f"""
-Write a short, high-energy, community-engaging promotional post for a crypto token named {data['coin_name']}.
-Project Details / Description: {data.get('coin_desc', 'Top crypto gem on the market')}
-Use exciting crypto emojis.
-DO NOT include any buy links, contract addresses, or URLs.
-Keep it concise, hype-driven, interactive, and under 4 lines. Output in English only. Do not use markdown asterisk stars.
+You are the creative social-media content engine for a crypto community.
+
+Create ONE completely fresh community-engagement post for:
+Token: {data['coin_name']}
+Project description: {data.get('coin_desc', 'Crypto community project')}
+
+Chosen content angle: {angle}
+
+The goal is genuine interaction. Encourage members to reply, debate, predict,
+choose, react, or share an opinion. Do not make false factual claims, fake
+partnerships, fake transactions, fake whale activity, guaranteed profits, or
+guaranteed price predictions.
+
+Rules:
+- English only.
+- Use natural crypto-community language and emojis.
+- Vary the structure, opening, sentence length, and CTA.
+- Do NOT always start with an emoji, the token name, "GM", "BREAKING", or "🚀".
+- Do NOT always ask about price.
+- Do NOT include any buy links, contract addresses, or URLs.
+- Do NOT copy or closely imitate the previous posts below.
+- Keep it concise, normally 2-6 short lines.
+- Do not use markdown asterisk stars.
+- Output ONLY the final post.
+
+Previous posts to avoid repeating:
+{recent_text if recent_text else "No previous posts available."}
 """
 
         response = client.models.generate_content(
             model='gemini-2.5-flash',
             contents=prompt,
         )
-        
+
         if response and response.text:
-            return response.text
+            post = response.text.strip()
+
+            RECENT_AI_POSTS.setdefault(channel_key, []).append(post)
+            RECENT_AI_POSTS[channel_key] = RECENT_AI_POSTS[channel_key][-MAX_RECENT_AI_POSTS:]
+
+            return post
         else:
             return get_fallback_message(data)
 
@@ -160,13 +243,15 @@ Keep it concise, hype-driven, interactive, and under 4 lines. Output in English 
         logging.error(f"Gemini API Error with rotation: {e}")
         return get_fallback_message(data)
 
+
 def generate_post(data):
     link_ratio = data.get('link_ratio', 100) / 100.0
     should_include_links = (random.random() < link_ratio)
 
     if not should_include_links:
-        template = random.choice(COMMUNITY_TEMPLATES)
-        post_text = template.format(coin_name=data['coin_name'])
+        # Keep the existing link-ratio logic, but replace the old fixed
+        # community templates with genuinely varied AI-generated posts.
+        post_text = generate_ai_post(data, include_links=False)
     else:
         enable_buy = data.get('enable_new_buy', False)
         if enable_buy and random.random() < 0.50:
