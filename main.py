@@ -31,7 +31,7 @@ from database import (
 # SEPARATED GEMINI API KEYS
 # ==========================================
 # POST KEYS 1-2: central content generation only.
-# GROUP KEYS 3-8: member answers/moderation only.
+# GROUP KEYS 3-10: member answers/moderation only.
 # Keep these keys in separate API projects when quota separation is needed.
 GEMINI_POST_API_KEYS = [
     os.getenv("GEMINI_API_KEY_1", "").strip(),
@@ -46,6 +46,8 @@ GEMINI_GROUP_API_KEYS = [
     os.getenv("GEMINI_API_KEY_6", "").strip(),
     os.getenv("GEMINI_API_KEY_7", "").strip(),
     os.getenv("GEMINI_API_KEY_8", "").strip(),
+    os.getenv("GEMINI_API_KEY_9", "").strip(),
+    os.getenv("GEMINI_API_KEY_10", "").strip(),
 ]
 GEMINI_GROUP_API_KEYS = [k for k in GEMINI_GROUP_API_KEYS if k]
 
@@ -273,10 +275,9 @@ Previous posts to avoid repeating:
             return get_fallback_message(data)
 
     except Exception as e:
-        # KEY 1 is deliberately the ONLY key used for AI posts.
-        # Never rotate into keys 2-4 here. If its quota is exhausted,
-        # immediately use fallback_db.py.
-        logging.error(f"Gemini AI post generation failed (KEY 1 only): {e}")
+        # Legacy per-post AI path. Normal publishing no longer calls this;
+        # central pool generation is used instead.
+        logging.error(f"Legacy Gemini AI post generation failed: {e}")
         logging.info("Falling back to fallback_db.py for this post")
         return get_fallback_message(data)
 
@@ -289,6 +290,10 @@ CONTENT_POOL_LOCK = asyncio.Lock()
 CONTENT_POOL_CACHE = {"count": 0, "batch_date": None}
 CONTENT_DELIVERY_STATE = {}
 COMMUNITY_HYPE_PROBABILITY = 0.20
+# Prevent repeated Gemini calls after a quota/API failure. Each post key is
+# attempted at most once per UTC/local calendar day for the central pool.
+CONTENT_POOL_ATTEMPT_DATE = None
+CONTENT_POOL_GENERATION_FAILED_TODAY = False
 
 
 def _extract_json_posts(text):
@@ -322,24 +327,46 @@ def _generate_pool_with_client(client, prompt):
 
 
 async def ensure_daily_content_pool():
-    """Ensure today's shared 30-post content pool exists."""
+    """Ensure today's shared 30-post content pool exists.
+
+    Gemini is used only to build the central pool, never once per group/post.
+    If the post-generation quota is exhausted, do not hammer Gemini again on
+    every publisher loop; use the local fallback layer until the next day.
+    """
+    global CONTENT_POOL_ATTEMPT_DATE, CONTENT_POOL_GENERATION_FAILED_TODAY
+
     async with CONTENT_POOL_LOCK:
-        count, batch_date = get_content_pool_stats()
         from datetime import date
-        if count >= 30 and str(batch_date) == str(date.today()):
+        today = date.today()
+
+        count, batch_date = get_content_pool_stats()
+        if count >= 30 and str(batch_date) == str(today):
+            CONTENT_POOL_CACHE["count"] = count
+            CONTENT_POOL_CACHE["batch_date"] = str(today)
             return True
-        if not GEMINI_POST_API_KEYS:
-            logging.warning("No post-generation Gemini keys configured; central pool not generated.")
+
+        if CONTENT_POOL_ATTEMPT_DATE == str(today) and CONTENT_POOL_GENERATION_FAILED_TODAY:
             return False
+
+        if not GEMINI_POST_API_KEYS:
+            logging.warning("No central-post Gemini keys configured; using local content.")
+            CONTENT_POOL_ATTEMPT_DATE = str(today)
+            CONTENT_POOL_GENERATION_FAILED_TODAY = True
+            return False
+
+        CONTENT_POOL_ATTEMPT_DATE = str(today)
+        CONTENT_POOL_GENERATION_FAILED_TODAY = False
 
         global_prompt = """
 Create exactly 15 short English crypto-community posts as a JSON array.
 Return ONLY valid JSON:
 [{"category":"geopolitical|markets|crypto|question","slot":"morning|midday|evening|any","content":"..."}]
 
-EXACTLY: 3 geopolitical posts (one morning, one midday, one evening);
-3 markets/economy posts about rates, inflation, jobs, GDP, central banks or major macro data;
-4 broad crypto posts; 5 evergreen community questions.
+EXACTLY:
+- 3 geopolitical posts: one morning, one midday, one evening.
+- 3 markets/economy posts about interest rates, inflation, jobs, GDP, central banks or major macro data.
+- 4 broad crypto posts.
+- 5 evergreen community questions.
 Every question MUST contain the exact placeholder {coin_name}.
 Do not invent breaking events, prices, statistics, partnerships or announcements.
 Do not give investment advice, guarantee profits, or use political persuasion.
@@ -347,49 +374,99 @@ Keep posts concise (normally 2-5 short lines).
 """
         network_prompt = f"""
 Create exactly 15 short English crypto ecosystem posts as a JSON array.
-Return ONLY valid JSON: [{{"network":"NETWORK","category":"network","content":"..."}}]
-Create exactly 3 posts for EACH: {', '.join(NETWORKS_FOR_POOL)}.
+Return ONLY valid JSON:
+[{{"network":"NETWORK","category":"network","content":"..."}}]
+
+Create exactly 3 posts for EACH of these networks: {', '.join(NETWORKS_FOR_POOL)}.
 Discuss technology, development, builders, DeFi, infrastructure, adoption or ecosystem themes.
 Do not invent current breaking events, prices, partnerships or statistics.
 Keep each post concise (2-5 short lines).
 """
 
-        clients = [genai.Client(api_key=k) for k in GEMINI_POST_API_KEYS]
-        global_posts = _generate_pool_with_client(clients[0], global_prompt)
-        network_posts = _generate_pool_with_client(clients[1 if len(clients) > 1 else 0], network_prompt)
+        # Exactly two central-generation calls: one with key 1 and one with key 2.
+        # If only one key exists, reuse it only once for the network batch.
+        post_keys = [k for k in GEMINI_POST_API_KEYS[:2] if k]
+        if not post_keys:
+            CONTENT_POOL_GENERATION_FAILED_TODAY = True
+            return False
 
-        normalized=[]
-        allowed={"geopolitical","markets","crypto","question"}
+        global_posts = _generate_pool_with_client(genai.Client(api_key=post_keys[0]), global_prompt)
+        network_key = post_keys[1] if len(post_keys) > 1 else post_keys[0]
+        network_posts = _generate_pool_with_client(genai.Client(api_key=network_key), network_prompt)
+
+        normalized = []
+        allowed = {"geopolitical", "markets", "crypto", "question"}
+        aliases = {
+            "bnb": "BNB", "bsc": "BNB", "bnb chain": "BNB", "binance smart chain": "BNB",
+            "sol": "Solana", "solana": "Solana", "sui": "Sui", "arc": "Arc",
+            "robinhood": "Robinhood", "robinhood chain": "Robinhood"
+        }
+
         for item in global_posts:
-            if isinstance(item, dict) and item.get("content"):
-                category=str(item.get("category","crypto")).strip().lower()
-                slot=str(item.get("slot","any")).strip().lower()
-                if category in allowed and not (category=="geopolitical" and slot not in {"morning","midday","evening"}):
-                    normalized.append({"category":category,"network":"","slot":slot if category=="geopolitical" else "any","content":str(item["content"]).strip()})
-        aliases={"bnb":"BNB","bsc":"BNB","bnb chain":"BNB","sol":"Solana","solana":"Solana","sui":"Sui","arc":"Arc","robinhood":"Robinhood","robinhood chain":"Robinhood"}
+            if not isinstance(item, dict) or not item.get("content"):
+                continue
+            category = str(item.get("category", "crypto")).strip().lower()
+            slot = str(item.get("slot", "any")).strip().lower()
+            if category not in allowed:
+                continue
+            if category == "geopolitical" and slot not in {"morning", "midday", "evening"}:
+                continue
+            if category != "geopolitical":
+                slot = "any"
+            normalized.append({
+                "category": category,
+                "network": "",
+                "slot": slot,
+                "content": str(item["content"]).strip()
+            })
+
         for item in network_posts:
-            if isinstance(item,dict) and item.get("content") and item.get("network"):
-                raw=str(item["network"]).strip()
-                normalized.append({"category":"network","network":aliases.get(raw.lower(),raw),"slot":"any","content":str(item["content"]).strip()})
+            if not isinstance(item, dict) or not item.get("content") or not item.get("network"):
+                continue
+            raw = str(item["network"]).strip()
+            network = aliases.get(raw.lower(), raw)
+            normalized.append({
+                "category": "network",
+                "network": network,
+                "slot": "any",
+                "content": str(item["content"]).strip()
+            })
 
-        counts={c:sum(1 for x in normalized if x["category"]==c) for c in ["geopolitical","markets","crypto","question","network"]}
-        net_counts={n:sum(1 for x in normalized if x["category"]=="network" and x["network"]==n) for n in NETWORKS_FOR_POOL}
-        slots={x["slot"] for x in normalized if x["category"]=="geopolitical"}
-        if (counts["geopolitical"]<3 or counts["markets"]<3 or counts["crypto"]<4 or counts["question"]<5 or counts["network"]<15 or not {"morning","midday","evening"}.issubset(slots) or any(net_counts[n]<3 for n in NETWORKS_FOR_POOL)):
-            logging.warning(f"Incomplete central pool: counts={counts}, networks={net_counts}. Keeping old pool.")
-            return count>=30
+        counts = {c: sum(1 for x in normalized if x["category"] == c)
+                  for c in ["geopolitical", "markets", "crypto", "question", "network"]}
+        net_counts = {n: sum(1 for x in normalized if x["category"] == "network" and x["network"] == n)
+                      for n in NETWORKS_FOR_POOL}
+        slots = {x["slot"] for x in normalized if x["category"] == "geopolitical"}
 
-        selected=[]
-        for slot in ("morning","midday","evening"):
-            selected.append(next(x for x in normalized if x["category"]=="geopolitical" and x["slot"]==slot))
-        for cat,num in (("markets",3),("crypto",4),("question",5)):
-            selected.extend([x for x in normalized if x["category"]==cat][:num])
+        complete = (
+            counts["geopolitical"] >= 3 and
+            counts["markets"] >= 3 and
+            counts["crypto"] >= 4 and
+            counts["question"] >= 5 and
+            counts["network"] >= 15 and
+            {"morning", "midday", "evening"}.issubset(slots) and
+            all(net_counts[n] >= 3 for n in NETWORKS_FOR_POOL)
+        )
+
+        if not complete:
+            CONTENT_POOL_GENERATION_FAILED_TODAY = True
+            logging.warning(
+                "Central content pool incomplete; local fallback will be used today. "
+                f"counts={counts}, networks={net_counts}"
+            )
+            return False
+
+        selected = []
+        for slot in ("morning", "midday", "evening"):
+            selected.append(next(x for x in normalized if x["category"] == "geopolitical" and x["slot"] == slot))
+        for category, number in (("markets", 3), ("crypto", 4), ("question", 5)):
+            selected.extend([x for x in normalized if x["category"] == category][:number])
         for network in NETWORKS_FOR_POOL:
-            selected.extend([x for x in normalized if x["category"]=="network" and x["network"]==network][:3])
+            selected.extend([x for x in normalized if x["category"] == "network" and x["network"] == network][:3])
 
         replace_content_pool(selected)
-        CONTENT_POOL_CACHE["count"]=len(selected)
-        CONTENT_POOL_CACHE["batch_date"]=str(date.today())
+        CONTENT_POOL_CACHE["count"] = len(selected)
+        CONTENT_POOL_CACHE["batch_date"] = str(today)
         logging.info("Central AI content pool refreshed: 30 posts (3 geo + 3 markets + 4 crypto + 5 questions + 15 network).")
         return True
 
