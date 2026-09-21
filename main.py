@@ -357,14 +357,13 @@ def is_approved_project_link(link, data):
 
 
 async def generate_group_ai_reply(data, member_name, member_message):
-    """Generate a natural AI reply when a member directly mentions the bot."""
-    try:
-        client = get_next_gemini_client()
-        if not client:
-            return f"Hey {member_name}! 👋 I'm here. What do you want to know about {data.get('coin_name', 'the project')}?"
+    """Generate a real Gemini reply when a member directly mentions the bot.
 
-        prompt = f"""
-You are the AI community assistant for a crypto Telegram group.
+    Retry across the configured Gemini keys so one exhausted/invalid key does
+    not silently turn every community reply into the generic fallback message.
+    """
+    prompt = f"""
+You are the AI community assistant inside a Telegram crypto community.
 
 Project token: {data.get('coin_name', 'the project')}
 Project description: {data.get('coin_desc', 'Crypto community project')}
@@ -372,31 +371,68 @@ Official buy link: {data.get('buy_link', '')}
 Official contract address: {data.get('contract', '')}
 Official Telegram: {data.get('channel', '')}
 
-A member named {member_name} directly mentioned/tagged you and wrote:
+A real member named {member_name} directly tagged you and wrote this message:
+---
 {member_message}
+---
 
-Reply directly to that member in a natural Telegram-community style.
-Rules:
-- Answer the actual question or comment instead of giving a generic greeting.
-- Be friendly, concise, and conversational.
-- Use the project's exact information above when relevant.
-- Never invent project facts, partnerships, transactions, listings, or announcements.
+Your job is to reply to THAT EXACT MESSAGE.
+
+Important:
+- First understand what the member is actually asking or saying.
+- Answer the question directly if there is a question.
+- If they make a statement, respond naturally to the statement instead of giving a generic greeting.
+- If they ask about the project, use only the project information supplied above.
+- If they ask something unrelated to the project, you may answer briefly and naturally.
+- Never invent project facts, partnerships, listings, transactions, announcements, or community statistics.
 - Never promise profits or guaranteed price increases.
-- If they ask about price or future performance, make it clear that nobody can guarantee it.
-- Do not mention being an AI unless it is relevant to the question.
-- English only, normally 1-5 short lines.
+- If asked for a guaranteed future price, explain briefly that it cannot be guaranteed.
+- Sound like an active, friendly Telegram community assistant, not a customer-support script.
+- Do not begin with "Hey {member_name}! I'm here" unless the member actually greeted you.
+- Do not say "Ask me anything" unless the member actually asks what you can do.
+- English only.
+- Normally 1-5 short lines.
+- Use emojis naturally, but do not force them into every reply.
 - Do not use markdown asterisk stars.
-- Output only the reply text.
+- Output ONLY the reply text.
 """
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-        )
-        if response and response.text:
-            return response.text.strip()
-    except Exception as e:
-        logging.error(f"Gemini group reply error: {e}")
 
+    attempts = max(1, len(GEMINI_API_KEYS))
+    last_error = None
+
+    for attempt in range(attempts):
+        try:
+            client = get_next_gemini_client()
+            if not client:
+                break
+
+            logging.info(
+                f"Generating AI group reply for @{member_name}: {member_message[:120]}"
+            )
+
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt,
+            )
+
+            if response and response.text and response.text.strip():
+                reply = response.text.strip()
+                logging.info(f"AI group reply generated successfully: {reply[:150]}")
+                return reply
+
+            last_error = "Gemini returned an empty response"
+            logging.warning(last_error)
+
+        except Exception as e:
+            last_error = e
+            logging.error(
+                f"Gemini group reply attempt {attempt + 1}/{attempts} failed: {e}"
+            )
+
+    if last_error:
+        logging.error(f"All Gemini group reply attempts failed: {last_error}")
+
+    # Only use this when Gemini is genuinely unavailable.
     return f"Hey {member_name}! 👋 I'm here. Ask me anything about {data.get('coin_name', 'the project')}."
 
 
