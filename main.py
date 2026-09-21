@@ -119,6 +119,10 @@ threading.Thread(target=run_health_check_server, daemon=True).start()
 
 ACTIVE_PUBLISH_TASKS = {}
 
+# Fast /start cache: Telegram entry must never wait for remote PostgreSQL.
+START_STATE_CACHE = {}
+START_STATE_CACHE_TTL = 300
+
 # ==========================================
 # PRIVATE SETUP FLOW CLEANUP
 # ==========================================
@@ -1205,39 +1209,100 @@ async def onboarding_continue(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.answer()
     return await show_public_main_menu(update, context)
 
+async def _resolve_start_state_after_render(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, first_message_id: int):
+    """Resolve PostgreSQL state AFTER /start has already rendered a screen.
+
+    This function is deliberately detached from the Telegram update path. A slow
+    Supabase/PostgreSQL connection must never make the user wait after pressing
+    /start.
+    """
+    try:
+        state = await asyncio.to_thread(get_user_start_state, user_id)
+        START_STATE_CACHE[user_id] = state
+
+        # Do not overwrite a screen the user has already interacted with.
+        current_id = context.user_data.get(FLOW_CURRENT_MESSAGE_KEY)
+        if current_id != first_message_id:
+            return
+
+        channels = state.get("channels", [])
+        onboarding_seen = state.get("onboarding_seen", False)
+        saved_language = state.get("language") or "en"
+        context.user_data["language"] = saved_language
+
+        if channels:
+            return  # The instant welcome-back screen is already correct.
+
+        if not onboarding_seen:
+            await show_language_selection(update, context)
+        else:
+            await show_subscription_plans(update, context)
+    except Exception:
+        logging.exception("Background /start state resolution failed")
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    # Database access can block on a remote PostgreSQL/Supabase connection.
-    # Never block Telegram's event loop while handling /start.
-    start_state = await asyncio.to_thread(get_user_start_state, user_id)
-    channels = start_state.get("channels", [])
-    onboarding_seen = start_state.get("onboarding_seen", False)
-    saved_language = start_state.get("language") or "en"
 
-    if channels:
-        keyboard = [
-            [InlineKeyboardButton("➕ Buy / Setup for Another Channel", callback_data='menu_buy_new')],
-            [InlineKeyboardButton("⚙️ Edit Settings for Existing Channel", callback_data='menu_edit_existing')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        msg = (
-            "🤖 Welcome back to DJANGO Crypto Auto-Promoter!\n\n"
-            "You have active channel promotional campaigns running.\n"
-            "What would you like to do today?"
-        )
-        if update.message:
-            await send_flow_reply(update, context, msg, reply_markup=reply_markup)
-        else:
-            await edit_flow_message(update.callback_query, context, msg, reply_markup=reply_markup)
-        return MAIN_MENU
-    else:
+    # ---------------------------------------------------------------
+    # CRITICAL PERFORMANCE RULE:
+    # Render the entrance FIRST. Never wait for PostgreSQL, Gemini, task
+    # startup, content-pool generation, or any other remote operation here.
+    # ---------------------------------------------------------------
+    cached = START_STATE_CACHE.get(user_id)
+    if cached:
+        channels = cached.get("channels", [])
+        onboarding_seen = cached.get("onboarding_seen", False)
+        saved_language = cached.get("language") or "en"
         context.user_data["language"] = saved_language
-        if not onboarding_seen:
+
+        if not channels and not onboarding_seen:
             return await show_language_selection(update, context)
-        return await show_subscription_plans(update, context)
+        if not channels:
+            return await show_subscription_plans(update, context)
+
+    # Existing-user entrance is intentionally immediate and polished. The
+    # database decides in the background whether this should become onboarding.
+    keyboard = [
+        [InlineKeyboardButton("➕ Buy / Setup for Another Channel", callback_data='menu_buy_new')],
+        [InlineKeyboardButton("⚙️ Edit Settings for Existing Channel", callback_data='menu_edit_existing')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    msg = (
+        "👑 DJANGO AI — WELCOME BACK\n\n"
+        "🤖 Your AI community command center is ready.\n\n"
+        "Your campaigns, automation and intelligent community tools are waiting.\n"
+        "What would you like to do today?"
+    )
+
+    if update.message:
+        screen = await send_flow_reply(update, context, msg, reply_markup=reply_markup)
+    else:
+        # Callback entry: replace the current screen using the existing smooth
+        # transition behavior.
+        screen = await edit_flow_message(update.callback_query, context, msg, reply_markup=reply_markup)
+
+    if screen:
+        context.user_data["start_loading_message_id"] = screen.message_id
+        # Resolve remote state only after the user already sees the entrance.
+        context.application.create_task(
+            _resolve_start_state_after_render(update, context, user_id, screen.message_id)
+        )
+
+    return MAIN_MENU
 
 async def show_subscription_plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Clear setup fields, but preserve the active screen so the new screen can
+    # replace/delete the previous one cleanly.
+    _flow_current = context.user_data.get(FLOW_CURRENT_MESSAGE_KEY)
+    _flow_ids_saved = context.user_data.get(FLOW_MESSAGE_IDS_KEY)
+    _language_saved = context.user_data.get("language", "en")
     context.user_data.clear()
+    if _flow_current:
+        context.user_data[FLOW_CURRENT_MESSAGE_KEY] = _flow_current
+    if _flow_ids_saved is not None:
+        context.user_data[FLOW_MESSAGE_IDS_KEY] = _flow_ids_saved
+    context.user_data["language"] = _language_saved
     welcome_msg = (
         "🤖 Welcome to DJANGO Crypto Auto-Promoter Bot!\n\n"
         "Boost your crypto channel & group engagement with AI-generated hype posts, "
@@ -1977,7 +2042,8 @@ if __name__ == '__main__':
             CallbackQueryHandler(main_menu_handler, pattern='^menu_edit_existing$'),
             CallbackQueryHandler(onboarding_language_selected, pattern='^lang_'),
             CallbackQueryHandler(onboarding_continue, pattern='^onboarding_continue$'),
-            CallbackQueryHandler(public_menu_handler, pattern='^(menu_launch|menu_language)$')
+            CallbackQueryHandler(public_menu_handler, pattern='^(menu_launch|menu_language)$'),
+            CallbackQueryHandler(plan_selected, pattern='^plan_'),
         ],
         states={
             LANGUAGE_SELECT: [
