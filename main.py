@@ -48,18 +48,6 @@ def get_next_gemini_client():
     api_key_index += 1
     return genai.Client(api_key=key)
 
-def generate_gemini_text(client, prompt):
-    """Generate text using the current Gemini Interactions API."""
-    interaction = client.interactions.create(
-        model="gemini-3.6-flash",
-        input=prompt,
-    )
-
-    if interaction and interaction.output_text:
-        return interaction.output_text.strip()
-
-    return ""
-
 # Enable Logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
@@ -237,9 +225,13 @@ Previous posts to avoid repeating:
 {recent_text if recent_text else "No previous posts available."}
 """
 
-        post = generate_gemini_text(client, prompt)
+        response = client.models.generate_content(
+            model='gemini-3.6-flash',
+            contents=prompt,
+        )
 
-        if post:
+        if response and response.text:
+            post = response.text.strip()
 
             RECENT_AI_POSTS.setdefault(channel_key, []).append(post)
             RECENT_AI_POSTS[channel_key] = RECENT_AI_POSTS[channel_key][-MAX_RECENT_AI_POSTS:]
@@ -418,9 +410,13 @@ Important:
                 f"Generating AI group reply for @{member_name}: {member_message[:120]}"
             )
 
-            reply = generate_gemini_text(client, prompt)
+            response = client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=prompt,
+            )
 
-            if reply:
+            if response and response.text and response.text.strip():
+                reply = response.text.strip()
                 logging.info(f"AI group reply generated successfully: {reply[:150]}")
                 return reply
 
@@ -486,7 +482,11 @@ other than the official project.
 SAFE if it is not about another cryptocurrency/token.
 Do not classify a general crypto word like 'coin' by itself as OTHER_COIN.
 """
-        result = generate_gemini_text(client, prompt).upper()
+        response = client.models.generate_content(
+            model="gemini-3.6-flash",
+            contents=prompt,
+        )
+        result = (response.text or "").strip().upper() if response else ""
         return result.startswith("OTHER_COIN")
     except Exception as e:
         logging.error(f"Gemini moderation error: {e}")
