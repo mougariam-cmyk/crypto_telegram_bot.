@@ -4,9 +4,9 @@ import asyncio
 import logging
 import threading
 import re
+import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-from google import genai
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, 
@@ -46,17 +46,42 @@ def get_next_gemini_client():
         return None
     key = GEMINI_API_KEYS[api_key_index % len(GEMINI_API_KEYS)]
     api_key_index += 1
-    return genai.Client(api_key=key)
+    return key
 
 def generate_gemini_text(client, prompt):
-    """Generate text using the current Gemini Interactions API."""
-    interaction = client.interactions.create(
-        model="gemini-3.6-flash",
-        input=prompt,
-    )
+    """Generate text through Gemini Interactions API using REST.
 
-    if interaction and interaction.output_text:
-        return interaction.output_text.strip()
+    REST is used deliberately here so the bot does not depend on a specific
+    google-genai SDK version or its httpx dependency constraints.
+    """
+    if not client:
+        return ""
+
+    url = "https://generativelanguage.googleapis.com/v1beta/interactions"
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": client,
+    }
+    payload = {
+        "model": "gemini-3.6-flash",
+        "input": prompt,
+    }
+
+    response = requests.post(url, headers=headers, json=payload, timeout=60)
+    response.raise_for_status()
+    data = response.json()
+
+    # Current Interactions API schema: steps -> model_output -> content -> text.
+    for step in reversed(data.get("steps", [])):
+        if step.get("type") == "model_output":
+            for content in reversed(step.get("content", [])):
+                if content.get("type") == "text" and content.get("text"):
+                    return content["text"].strip()
+
+    # Compatibility with the earlier Interactions response schema.
+    for output in reversed(data.get("outputs", [])):
+        if output.get("type") == "text" and output.get("text"):
+            return output["text"].strip()
 
     return ""
 
