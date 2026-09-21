@@ -569,46 +569,131 @@ async def back_to_plans_handler(update: Update, context: ContextTypes.DEFAULT_TY
     return await show_subscription_plans(update, context)
 
 async def get_coin_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # تنظيف مخلفات رسالة المستخدم وإرسال الخطوة الجديدة بنجاح
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
     context.user_data['coin_name'] = update.message.text.strip()
     if context.user_data.get('is_editing'):
         return await show_edit_options(update, context)
     
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_coin_name')]])
-    await update.message.reply_text("2️⃣ Send a brief Description / Hype Points for your token:", reply_markup=keyboard)
+    
+    # إذا كانت رسالة البوت السابقة موجودة نقوم بتعديلها، وإلا فنرسل جديدة
+    if 'last_bot_msg_id' in context.user_data:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=context.user_data['last_bot_msg_id'],
+                text="2️⃣ Send a brief Description / Hype Points for your token:",
+                reply_markup=keyboard
+            )
+        except Exception:
+            sent = await update.message.reply_text("2️⃣ Send a brief Description / Hype Points for your token:", reply_markup=keyboard)
+            context.user_data['last_bot_msg_id'] = sent.message_id
+    else:
+        sent = await update.message.reply_text("2️⃣ Send a brief Description / Hype Points for your token:", reply_markup=keyboard)
+        context.user_data['last_bot_msg_id'] = sent.message_id
+
     return COIN_DESC
 
 async def get_coin_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
     context.user_data['coin_desc'] = update.message.text.strip()
     if context.user_data.get('is_editing'):
         return await show_edit_options(update, context)
         
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_coin_desc')]])
-    await update.message.reply_text("3️⃣ Send your Token Contract Address (CA):", reply_markup=keyboard)
+    
+    if 'last_bot_msg_id' in context.user_data:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=context.user_data['last_bot_msg_id'],
+                text="3️⃣ Send your Token Contract Address (CA):",
+                reply_markup=keyboard
+            )
+        except Exception:
+            sent = await update.message.reply_text("3️⃣ Send your Token Contract Address (CA):", reply_markup=keyboard)
+            context.user_data['last_bot_msg_id'] = sent.message_id
+    else:
+        sent = await update.message.reply_text("3️⃣ Send your Token Contract Address (CA):", reply_markup=keyboard)
+        context.user_data['last_bot_msg_id'] = sent.message_id
+
     return CONTRACT
 
 async def get_contract(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
     context.user_data['contract'] = update.message.text.strip()
     if context.user_data.get('is_editing'):
         return await show_edit_options(update, context)
         
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_contract')]])
-    await update.message.reply_text("4️⃣ Send your DEXScreener or Buy Link:", reply_markup=keyboard)
+    
+    if 'last_bot_msg_id' in context.user_data:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=context.user_data['last_bot_msg_id'],
+                text="4️⃣ Send your DEXScreener or Buy Link:",
+                reply_markup=keyboard
+            )
+        except Exception:
+            sent = await update.message.reply_text("4️⃣ Send your DEXScreener or Buy Link:", reply_markup=keyboard)
+            context.user_data['last_bot_msg_id'] = sent.message_id
+    else:
+        sent = await update.message.reply_text("4️⃣ Send your DEXScreener or Buy Link:", reply_markup=keyboard)
+        context.user_data['last_bot_msg_id'] = sent.message_id
+
     return BUY_LINK
 
 async def get_buy_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
     context.user_data['buy_link'] = update.message.text.strip()
     
     if context.user_data.get('is_editing'):
         return await show_edit_options(update, context)
 
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_buy_link')]])
-    await update.message.reply_text(
-        "5️⃣ Send your Channel Username (e.g., @mychannel) or Channel Link (e.g., https://t.me/mychannel):",
-        reply_markup=keyboard
-    )
+    text = "5️⃣ Send your Channel Username (e.g., @mychannel) or Channel Link (e.g., https://t.me/mychannel):"
+
+    if 'last_bot_msg_id' in context.user_data:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=context.user_data['last_bot_msg_id'],
+                text=text,
+                reply_markup=keyboard
+            )
+        except Exception:
+            sent = await update.message.reply_text(text, reply_markup=keyboard)
+            context.user_data['last_bot_msg_id'] = sent.message_id
+    else:
+        sent = await update.message.reply_text(text, reply_markup=keyboard)
+        context.user_data['last_bot_msg_id'] = sent.message_id
+
     return CHANNEL
 
 async def get_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
     raw_channel = update.message.text.strip()
     formatted_channel = parse_channel_input(raw_channel)
     user_id = update.effective_user.id
@@ -635,7 +720,21 @@ async def get_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await update.message.reply_text(msg, reply_markup=reply_markup)
+    if 'last_bot_msg_id' in context.user_data:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=context.user_data['last_bot_msg_id'],
+                text=msg,
+                reply_markup=reply_markup
+            )
+        except Exception:
+            sent = await update.message.reply_text(msg, reply_markup=reply_markup)
+            context.user_data['last_bot_msg_id'] = sent.message_id
+    else:
+        sent = await update.message.reply_text(msg, reply_markup=reply_markup)
+        context.user_data['last_bot_msg_id'] = sent.message_id
+
     return VERIFY_ADMIN
 
 async def verify_admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -686,6 +785,11 @@ async def verify_admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def get_msg_per_hour(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    try:
         count = int(update.message.text.strip())
         count = max(1, min(20, count))
     except ValueError:
@@ -700,7 +804,23 @@ async def get_msg_per_hour(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("75%", callback_data='ratio_75'), InlineKeyboardButton("100%", callback_data='ratio_100')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("7️⃣ What percentage of posts should contain Buy Links & Contract?", reply_markup=reply_markup)
+    text = "7️⃣ What percentage of posts should contain Buy Links & Contract?"
+
+    if 'last_bot_msg_id' in context.user_data:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=context.user_data['last_bot_msg_id'],
+                text=text,
+                reply_markup=reply_markup
+            )
+        except Exception:
+            sent = await update.message.reply_text(text, reply_markup=reply_markup)
+            context.user_data['last_bot_msg_id'] = sent.message_id
+    else:
+        sent = await update.message.reply_text(text, reply_markup=reply_markup)
+        context.user_data['last_bot_msg_id'] = sent.message_id
+
     return LINK_RATIO
 
 async def get_link_ratio(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -710,7 +830,7 @@ async def get_link_ratio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == 'back_to_verify_admin':
         msg = (
             f"⚠️ IMPORTANT STEP: Admin Rights Required!\n\n"
-            f"Please add this bot as an Administrator in your channel `@DJANGO_CRYPTO_BOT`[span_1](start_span)[span_1](end_span).\n\n"
+            f"Please add this bot as an Administrator in your channel `@DJANGO_CRYPTO_BOT`.\n\n"
             "📋 Instructions:\n"
             "1. Copy the bot username below using the button.\n"
             "2. Go to your channel settings -> Administrators -> Add Admin.\n"
@@ -732,149 +852,190 @@ async def get_link_ratio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await show_edit_options(update, context)
 
     keyboard = [
-        [InlineKeyboardButton("Yes 🚀 (Include Buy Alerts)", callback_data='newbuy_yes')],
-        [InlineKeyboardButton("No 🤖 (AI Hype Only)", callback_data='newbuy_no')]
+        [InlineKeyboardButton("Yes 🚀 (Enable Buy Alerts)", callback_data='newbuy_yes')],
+        [InlineKeyboardButton("No 🤖 (AI Posts Only)", callback_data='newbuy_no')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text("8️⃣ Would you like to enable Simulated New Buy Alerts?", reply_markup=reply_markup)
     return ENABLE_NEW_BUY
 
-async def finish_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.callback_query:
-        query = update.callback_query
-        await query.answer()
-        if query.data.startswith('newbuy_'):
-            context.user_data['enable_new_buy'] = (query.data == 'newbuy_yes')
-        user_id = query.from_user.id
-        username = query.from_user.username or ""
-    else:
-        user_id = update.effective_user.id
-        username = update.effective_user.username or ""
-    
-    channel = context.user_data.get('channel')
+async def get_enable_new_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
 
-    save_user_data(user_id, username, context.user_data)
-    await show_edit_options(update, context)
+    if query.data == 'back_to_edit_menu':
+        return await show_edit_options(update, context)
+
+    enable = (query.data == 'newbuy_yes')
+    context.user_data['enable_new_buy'] = enable
+
+    return await finish_setup(update, context)
+
+async def finish_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    username = update.effective_user.username or ""
+    data = context.user_data
+
+    save_user_data(user_id, username, data)
+
+    channel = data.get('channel')
     
     if channel in ACTIVE_PUBLISH_TASKS:
         ACTIVE_PUBLISH_TASKS[channel].cancel()
 
-    task = asyncio.create_task(start_publishing(context.application, context.user_data.copy()))
-    ACTIVE_PUBLISH_TASKS[channel] = task
+    loop = asyncio.get_event_loop()
+    ACTIVE_PUBLISH_TASKS[channel] = loop.create_task(channel_publisher_task(data, context.application))
 
-    context.user_data['is_editing'] = True
-    return EDIT_OPTIONS_MENU
+    success_msg = (
+        f"🎉 SUCCESS! Auto-Promoter is now active for {channel}!\n\n"
+        f"🪙 Token: {data.get('coin_name')}\n"
+        f"💳 Plan: {data.get('selected_plan', 'free').upper()}\n"
+        f"⏱️ Frequency: {data.get('msg_per_hour', 2)} posts/hour\n"
+        f"📊 Links Ratio: {data.get('link_ratio', 100)}%\n\n"
+        "Your automated crypto growth campaign has started! 🚀"
+    )
 
-async def start_publishing(app, data):
-    plan = data.get('selected_plan', 'free')
-    
-    if plan == 'free':
-        delay_seconds = 21600
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚙️ Edit Settings / Manage", callback_data='menu_edit_existing')],
+        [InlineKeyboardButton("🏠 Main Menu", callback_data='back_to_main')]
+    ])
+
+    if update.callback_query:
+        await update.callback_query.edit_message_text(success_msg, reply_markup=keyboard)
     else:
-        msg_per_hour = data.get('msg_per_hour', 2)
-        delay_seconds = int((60 / msg_per_hour) * 60)
-        
-    channel_id = str(data.get('channel', '')).strip()
-    
-    while True:
-        try:
-            post_text = generate_post(data)
-            reply_markup = FREE_PLAN_FOOTER_BUTTONS if plan == 'free' else None
+        await update.message.reply_text(success_msg, reply_markup=keyboard)
 
-            await app.bot.send_message(
-                chat_id=channel_id, 
-                text=post_text, 
-                reply_markup=reply_markup
-            )
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            logging.error(f"Failed to send post to channel {channel_id}: {e}")
-            
-        try:
-            await asyncio.sleep(delay_seconds)
-        except asyncio.CancelledError:
-            break
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['is_editing'] = False
-    await update.message.reply_text("Setup canceled. Send /start to open the main menu.")
+    context.user_data.clear()
     return ConversationHandler.END
 
-async def restore_active_tasks(app):
-    users = get_active_users()
-    for user_data in users:
-        channel = user_data.get('channel')
-        if channel in ACTIVE_PUBLISH_TASKS:
-            ACTIVE_PUBLISH_TASKS[channel].cancel()
-        task = asyncio.create_task(start_publishing(app, user_data))
-        ACTIVE_PUBLISH_TASKS[channel] = task
+# ==========================================
+# BACKGROUND AUTOMATED PUBLISHING LOOP
+# ==========================================
+async def channel_publisher_task(data, application):
+    channel = data['channel']
+    logging.info(f"Started background publisher task for channel: {channel}")
 
-if __name__ == '__main__':
+    try:
+        while True:
+            current_data = get_user_channel_data(data['user_id'], channel)
+            if not current_data or current_data.get('subscription_status') == 'cancelled':
+                logging.info(f"Stopping publisher task for {channel} due to cancellation or removal.")
+                break
+
+            plan = current_data.get('selected_plan', 'free')
+            if plan == 'free':
+                delay_seconds = 6 * 3600
+            else:
+                msg_per_hour = current_data.get('msg_per_hour', 2)
+                delay_seconds = int(3600 / max(1, msg_per_hour))
+
+            post_text = generate_post(current_data)
+
+            try:
+                if current_data.get('selected_plan') == 'free':
+                    await application.bot.send_message(
+                        chat_id=channel,
+                        text=post_text,
+                        reply_markup=FREE_PLAN_FOOTER_BUTTONS,
+                        disable_web_page_preview=True
+                    )
+                else:
+                    await application.bot.send_message(
+                        chat_id=channel,
+                        text=post_text,
+                        disable_web_page_preview=True
+                    )
+                logging.info(f"Successfully published automated post to {channel}")
+            except Exception as e:
+                logging.error(f"Failed to post to channel {channel}: {e}")
+
+            await asyncio.sleep(delay_seconds)
+
+    except asyncio.CancelledError:
+        logging.info(f"Publisher task for {channel} was cancelled.")
+    except Exception as e:
+        logging.error(f"Publisher task error for {channel}: {e}")
+
+async def restore_active_tasks(application):
+    users = get_active_users()
+    loop = asyncio.get_event_loop()
+    for user in users:
+        channel = user['channel']
+        if channel and channel not in ACTIVE_PUBLISH_TASKS:
+            ACTIVE_PUBLISH_TASKS[channel] = loop.create_task(channel_publisher_task(user, application))
+    logging.info(f"Restored {len(ACTIVE_PUBLISH_TASKS)} active publishing tasks from database.")
+
+# ==========================================
+# MAIN APPLICATION ENTRY POINT
+# ==========================================
+def main():
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
-        raise ValueError("No TELEGRAM_BOT_TOKEN provided in environment variables!")
+        logging.error("No TELEGRAM_BOT_TOKEN found in environment variables!")
+        return
 
-    app = ApplicationBuilder().token(token).build()
+    application = ApplicationBuilder().token(token).build()
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
-            MAIN_MENU: [CallbackQueryHandler(main_menu_handler, pattern='^menu_')],
-            EDIT_SELECT_CHANNEL: [
-                CallbackQueryHandler(select_channel_to_edit, pattern='^edit_ch_'),
-                CallbackQueryHandler(select_channel_to_edit, pattern='^back_to_main$')
-            ],
-            EDIT_OPTIONS_MENU: [
-                CallbackQueryHandler(edit_options_handler, pattern='^opt_'),
-                CallbackQueryHandler(edit_options_handler, pattern='^back_to_main$')
-            ],
-            CONFIRM_CANCEL_SUB: [CallbackQueryHandler(confirm_cancel_sub_handler, pattern='^(confirm_cancel_|back_to_edit_menu)')],
+            MAIN_MENU: [CallbackQueryHandler(main_menu_handler)],
             PLAN_SELECT: [
                 CallbackQueryHandler(plan_selected, pattern='^plan_'),
-                CallbackQueryHandler(plan_selected, pattern='^back_to_main$')
+                CallbackQueryHandler(main_menu_handler, pattern='^menu_')
             ],
+            EDIT_SELECT_CHANNEL: [CallbackQueryHandler(select_channel_to_edit)],
+            EDIT_OPTIONS_MENU: [CallbackQueryHandler(edit_options_handler)],
+            CONFIRM_CANCEL_SUB: [CallbackQueryHandler(confirm_cancel_sub_handler)],
             COIN_NAME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, get_coin_name),
-                CallbackQueryHandler(back_to_plans_handler, pattern='^back_to_plans$'),
                 CallbackQueryHandler(back_to_edit_menu_handler, pattern='^back_to_edit_menu$')
             ],
             COIN_DESC: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, get_coin_desc),
-                CallbackQueryHandler(back_to_plans_handler, pattern='^back_to_coin_name$')
+                CallbackQueryHandler(back_to_edit_menu_handler, pattern='^back_to_edit_menu$')
             ],
             CONTRACT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, get_contract),
-                CallbackQueryHandler(back_to_plans_handler, pattern='^back_to_coin_desc$')
+                CallbackQueryHandler(back_to_edit_menu_handler, pattern='^back_to_edit_menu$')
             ],
             BUY_LINK: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, get_buy_link),
-                CallbackQueryHandler(back_to_plans_handler, pattern='^back_to_contract$')
+                CallbackQueryHandler(back_to_edit_menu_handler, pattern='^back_to_edit_menu$')
             ],
             CHANNEL: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, get_channel),
-                CallbackQueryHandler(back_to_plans_handler, pattern='^back_to_buy_link$')
-            ],
-            VERIFY_ADMIN: [
-                CallbackQueryHandler(verify_admin_status, pattern='^(verify_admin|back_to_channel_input)$')
-            ],
-            MSG_PER_HOUR: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_msg_per_hour)],
-            LINK_RATIO: [
-                CallbackQueryHandler(get_link_ratio, pattern='^(ratio_|back_to_verify_admin)')
-            ],
-            ENABLE_NEW_BUY: [
-                CallbackQueryHandler(finish_setup, pattern='^newbuy_'),
-                CallbackQueryHandler(edit_options_handler, pattern='^opt_'),
                 CallbackQueryHandler(back_to_edit_menu_handler, pattern='^back_to_edit_menu$')
             ],
+            VERIFY_ADMIN: [
+                CallbackQueryHandler(verify_admin_status),
+                CallbackQueryHandler(back_to_edit_menu_handler, pattern='^back_to_edit_menu$')
+            ],
+            MSG_PER_HOUR: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_msg_per_hour),
+                CallbackQueryHandler(back_to_edit_menu_handler, pattern='^back_to_edit_menu$')
+            ],
+            LINK_RATIO: [
+                CallbackQueryHandler(get_link_ratio),
+                CallbackQueryHandler(back_to_edit_menu_handler, pattern='^back_to_edit_menu$')
+            ],
+            ENABLE_NEW_BUY: [
+                CallbackQueryHandler(get_enable_new_buy),
+                CallbackQueryHandler(back_to_edit_menu_handler, pattern='^back_to_edit_menu$')
+            ]
         },
-        fallbacks=[CommandHandler('cancel', cancel)],
+        fallbacks=[CommandHandler('start', start)]
     )
 
-    app.add_handler(conv_handler)
-    
-    loop = asyncio.get_event_loop()
-    loop.create_task(restore_active_tasks(app))
+    application.add_handler(conv_handler)
 
-    print("DJANGO Bot running...")
-    app.run_polling(drop_pending_updates=True, stop_signals=None)
+    async def post_init(app):
+        await restore_active_tasks(app)
+
+    application.post_init = post_init
+
+    logging.info("Starting DJANGO Crypto Auto-Promoter Telegram Bot...")
+    application.run_polling()
+
+if __name__ == '__main__':
+    main()
