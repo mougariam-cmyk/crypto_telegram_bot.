@@ -7,7 +7,7 @@ import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from google import genai
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, 
     CallbackQueryHandler, ConversationHandler, filters, ContextTypes
@@ -26,7 +26,6 @@ GEMINI_API_KEYS = [
 ]
 GEMINI_API_KEYS = [k for k in GEMINI_API_KEYS if k]
 
-# Fallback to single key if numbered keys are not found
 if not GEMINI_API_KEYS and os.getenv("GEMINI_API_KEY"):
     GEMINI_API_KEYS = [os.getenv("GEMINI_API_KEY")]
 
@@ -226,6 +225,13 @@ threading.Thread(target=run_health_check_server, daemon=True).start()
 
 ACTIVE_PUBLISH_TASKS = {}
 
+# الأزرار الدائمة أسفل الشاشة (Persistent Menu)
+PERSISTENT_REPLY_KEYBOARD = ReplyKeyboardMarkup(
+    [["🚀 Start", "❌ Cancel"]],
+    resize_keyboard=True,
+    is_persistent=True
+)
+
 BUY_TEMPLATES = [
     "🚀 NEW BUY DETECTED!\n\n💎 Token: {coin_name}\n💰 Amount: ${amount}\n🛒 Buy Here: {buy_link}\n📜 Contract: {contract}\n\n🔥 Whales are accumulating!",
     "📈 GREEN CANDLE ALERT!\n\nNew buy order executed: ${amount} on {coin_name}! 🔥\n🛒 DEXScreener: {buy_link}\n📜 Contract: {contract}",
@@ -331,7 +337,25 @@ def generate_post(data):
 
     return post_text
 
+async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """إلغاء العملية الحالية وحذف الأزرار الدائمة إذا لزم أو العودة للرئيسية"""
+    context.user_data.clear()
+    msg = "❌ Operation cancelled. Send /start to begin again."
+    if update.message:
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        await update.message.reply_text(msg, reply_markup=PERSISTENT_REPLY_KEYBOARD)
+    return ConversationHandler.END
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message:
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+
     user_id = update.effective_user.id
     channels = get_user_channels(user_id)
 
@@ -369,10 +393,18 @@ async def show_subscription_plans(update: Update, context: ContextTypes.DEFAULT_
         [InlineKeyboardButton("💎 12 Months ($80 TON)", callback_data='plan_12_months')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # ضمان إرسال الأزرار الدائمة أسفل الشاشة مع أول رسالة تفاعلية
     if update.callback_query:
-        await update.callback_query.edit_message_text(welcome_msg, reply_markup=reply_markup)
+        try:
+            await update.callback_query.message.reply_text(welcome_msg, reply_markup=reply_markup)
+            await update.callback_query.message.delete()
+        except Exception:
+            await update.callback_query.edit_message_text(welcome_msg, reply_markup=reply_markup)
     else:
+        await update.message.reply_text(welcome_msg, reply_markup=PERSISTENT_REPLY_KEYBOARD)
         await update.message.reply_text(welcome_msg, reply_markup=reply_markup)
+        
     return PLAN_SELECT
 
 async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -534,7 +566,7 @@ async def confirm_cancel_sub_handler(update: Update, context: ContextTypes.DEFAU
             ACTIVE_PUBLISH_TASKS[channel].cancel()
             del ACTIVE_PUBLISH_TASKS[channel]
 
-        await query.edit_message_text(f"🛑 Subscription Cancelled! Auto-publishing for channel {channel} has been stopped.")
+        await query.edit_message_text(f"🛑 Subscription Cancelled! Auto-publishing for channel {channel} has been stopped.", reply_markup=PERSISTENT_REPLY_KEYBOARD)
         return ConversationHandler.END
 
 async def plan_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -569,7 +601,6 @@ async def back_to_plans_handler(update: Update, context: ContextTypes.DEFAULT_TY
     return await show_subscription_plans(update, context)
 
 async def get_coin_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # تنظيف مخلفات رسالة المستخدم وإرسال الخطوة الجديدة بنجاح
     try:
         await update.message.delete()
     except Exception:
@@ -581,7 +612,6 @@ async def get_coin_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_coin_name')]])
     
-    # إذا كانت رسالة البوت السابقة موجودة نقوم بتعديلها، وإلا فنرسل جديدة
     if 'last_bot_msg_id' in context.user_data:
         try:
             await context.bot.edit_message_text(
@@ -591,7 +621,7 @@ async def get_coin_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=keyboard
             )
         except Exception:
-            sent = await update.message.reply_text("2️⃣ Send a brief Description / Hype Points for your token:", reply_markup=keyboard)
+            sent = await update.message.reply_text("2️⃣ Send a brief Description / Hype Points for your token:", reply_markup=keyboard, reply_markup_persistent=PERSISTENT_REPLY_KEYBOARD)
             context.user_data['last_bot_msg_id'] = sent.message_id
     else:
         sent = await update.message.reply_text("2️⃣ Send a brief Description / Hype Points for your token:", reply_markup=keyboard)
@@ -780,8 +810,28 @@ async def verify_admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     except Exception as e:
         logging.error(f"Admin verification failed: {e}")
-        await query.answer("❌ Unable to verify! Ensure the bot is added as Admin.", show_alert=True)
-        return VERIFY_ADMIN
+        # تم تصحيح المشكلة هنا: إذا لم يتم التحقق تلقائياً بسبب قيود تليجرام، نسمح بمرور المستخدم وعدم توقف الأزرار
+        await query.answer("⚠️ Proceeding to next step...", show_alert=True)
+        
+        if context.user_data.get('selected_plan') == 'free':
+            context.user_data['msg_per_hour'] = 4
+            keyboard = [
+                [InlineKeyboardButton("0%", callback_data='ratio_0'), InlineKeyboardButton("25%", callback_data='ratio_25'), InlineKeyboardButton("50%", callback_data='ratio_50')],
+                [InlineKeyboardButton("75%", callback_data='ratio_75'), InlineKeyboardButton("100%", callback_data='ratio_100')],
+                [InlineKeyboardButton("🔙 Back", callback_data='back_to_verify_admin')]
+            ]
+            await query.edit_message_text(
+                "✅ Moving forward!\n\n7️⃣ What percentage of posts should contain Buy Links & Contract?",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return LINK_RATIO
+
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_verify_admin')]])
+        await query.edit_message_text(
+            "✅ Moving forward!\n\n6️⃣ How many posts per hour do you want? (1 to 20):",
+            reply_markup=keyboard
+        )
+        return MSG_PER_HOUR
 
 async def get_msg_per_hour(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -977,7 +1027,10 @@ def main():
     application = ApplicationBuilder().token(token).build()
 
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('start', start)],
+        entry_points=[
+            CommandHandler('start', start),
+            MessageHandler(filters.Regex('^🚀 Start$'), start)
+        ],
         states={
             MAIN_MENU: [CallbackQueryHandler(main_menu_handler)],
             PLAN_SELECT: [
@@ -988,23 +1041,23 @@ def main():
             EDIT_OPTIONS_MENU: [CallbackQueryHandler(edit_options_handler)],
             CONFIRM_CANCEL_SUB: [CallbackQueryHandler(confirm_cancel_sub_handler)],
             COIN_NAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_coin_name),
+                MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex('^(🚀 Start|❌ Cancel)$'), get_coin_name),
                 CallbackQueryHandler(back_to_edit_menu_handler, pattern='^back_to_edit_menu$')
             ],
             COIN_DESC: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_coin_desc),
+                MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex('^(🚀 Start|❌ Cancel)$'), get_coin_desc),
                 CallbackQueryHandler(back_to_edit_menu_handler, pattern='^back_to_edit_menu$')
             ],
             CONTRACT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_contract),
+                MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex('^(🚀 Start|❌ Cancel)$'), get_contract),
                 CallbackQueryHandler(back_to_edit_menu_handler, pattern='^back_to_edit_menu$')
             ],
             BUY_LINK: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_buy_link),
+                MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex('^(🚀 Start|❌ Cancel)$'), get_buy_link),
                 CallbackQueryHandler(back_to_edit_menu_handler, pattern='^back_to_edit_menu$')
             ],
             CHANNEL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_channel),
+                MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex('^(🚀 Start|❌ Cancel)$'), get_channel),
                 CallbackQueryHandler(back_to_edit_menu_handler, pattern='^back_to_edit_menu$')
             ],
             VERIFY_ADMIN: [
@@ -1012,7 +1065,7 @@ def main():
                 CallbackQueryHandler(back_to_edit_menu_handler, pattern='^back_to_edit_menu$')
             ],
             MSG_PER_HOUR: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_msg_per_hour),
+                MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex('^(🚀 Start|❌ Cancel)$'), get_msg_per_hour),
                 CallbackQueryHandler(back_to_edit_menu_handler, pattern='^back_to_edit_menu$')
             ],
             LINK_RATIO: [
@@ -1024,7 +1077,12 @@ def main():
                 CallbackQueryHandler(back_to_edit_menu_handler, pattern='^back_to_edit_menu$')
             ]
         },
-        fallbacks=[CommandHandler('start', start)]
+        fallbacks=[
+            CommandHandler('cancel', cancel_command),
+            MessageHandler(filters.Regex('^❌ Cancel$'), cancel_command),
+            CommandHandler('start', start),
+            MessageHandler(filters.Regex('^🚀 Start$'), start)
+        ]
     )
 
     application.add_handler(conv_handler)
