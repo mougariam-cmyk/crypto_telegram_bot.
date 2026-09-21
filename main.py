@@ -1,6 +1,5 @@
 import os
 import random
-import psycopg2
 import asyncio
 import logging
 import threading
@@ -14,6 +13,15 @@ from telegram.ext import (
 )
 
 from fallback_db import get_fallback_message
+
+from database import (
+    init_db,
+    save_user_data,
+    cancel_user_subscription,
+    get_user_channels,
+    get_user_channel_data,
+    get_active_users
+)
 
 # ==========================================
 # MULTI-GEMINI API KEYS ROTATION SYSTEM
@@ -43,161 +51,10 @@ def get_next_gemini_client():
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 # ==========================================
-# DATABASE SYSTEM (Supabase / PostgreSQL)
+# DATABASE SYSTEM
 # ==========================================
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-def get_db_connection():
-    db_url = DATABASE_URL
-    if db_url and db_url.startswith("postgres://"):
-        db_url = db_url.replace("postgres://", "postgresql://", 1)
-    return psycopg2.connect(db_url)
-
-def init_db():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id BIGINT,
-            username TEXT,
-            selected_plan TEXT,
-            coin_name TEXT,
-            coin_desc TEXT,
-            contract TEXT,
-            buy_link TEXT,
-            channel TEXT,
-            msg_per_hour INTEGER,
-            enable_new_buy INTEGER,
-            link_ratio INTEGER DEFAULT 100,
-            subscription_status TEXT DEFAULT 'active',
-            PRIMARY KEY (user_id, channel)
-        );
-    ''')
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-def save_user_data(user_id: int, username: str, data: dict):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        SELECT selected_plan FROM users WHERE user_id = %s AND channel = %s AND subscription_status = 'active';
-    ''', (user_id, data.get('channel', '')))
-    existing = cursor.fetchone()
-    
-    target_plan = data.get('selected_plan', 'free')
-    if existing and existing[0] != 'free' and target_plan == 'free' and not data.get('is_editing'):
-        target_plan = existing[0]
-
-    cursor.execute('''
-        INSERT INTO users (
-            user_id, username, selected_plan, coin_name, coin_desc, 
-            contract, buy_link, channel, msg_per_hour, enable_new_buy, link_ratio, subscription_status
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active')
-        ON CONFLICT(user_id, channel) DO UPDATE SET
-            username=EXCLUDED.username,
-            selected_plan=EXCLUDED.selected_plan,
-            coin_name=EXCLUDED.coin_name,
-            coin_desc=EXCLUDED.coin_desc,
-            contract=EXCLUDED.contract,
-            buy_link=EXCLUDED.buy_link,
-            msg_per_hour=EXCLUDED.msg_per_hour,
-            enable_new_buy=EXCLUDED.enable_new_buy,
-            link_ratio=EXCLUDED.link_ratio,
-            subscription_status='active';
-    ''', (
-        user_id,
-        username,
-        target_plan,
-        data.get('coin_name', ''),
-        data.get('coin_desc', ''),
-        data.get('contract', ''),
-        data.get('buy_link', ''),
-        data.get('channel', ''),
-        data.get('msg_per_hour', 2),
-        1 if data.get('enable_new_buy', False) else 0,
-        data.get('link_ratio', 100)
-    ))
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-def cancel_user_subscription(user_id: int, channel: str):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        UPDATE users SET subscription_status = 'cancelled'
-        WHERE user_id = %s AND (channel = %s OR channel = %s);
-    ''', (user_id, channel, f"@{channel}" if not channel.startswith('@') else channel.replace('@', '')))
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-def get_user_channels(user_id: int):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT channel, coin_name FROM users WHERE user_id = %s AND subscription_status = 'active';
-    ''', (user_id,))
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return rows
-
-def get_user_channel_data(user_id: int, channel: str):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT selected_plan, coin_name, coin_desc, contract, buy_link, channel, msg_per_hour, enable_new_buy, link_ratio
-        FROM users WHERE user_id = %s AND (channel = %s OR channel = %s) AND subscription_status = 'active';
-    ''', (user_id, channel, f"@{channel}" if not channel.startswith('@') else channel.replace('@', '')))
-    row = cursor.fetchone()
-    cursor.close()
-    conn.close()
-    if row:
-        return {
-            'user_id': user_id,
-            'selected_plan': row[0],
-            'coin_name': row[1],
-            'coin_desc': row[2],
-            'contract': row[3],
-            'buy_link': row[4],
-            'channel': row[5],
-            'msg_per_hour': row[6],
-            'enable_new_buy': bool(row[7]),
-            'link_ratio': row[8] if row[8] is not None else 100
-        }
-    return None
-
-def get_active_users():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT user_id, selected_plan, coin_name, coin_desc, contract, buy_link, channel, msg_per_hour, enable_new_buy, link_ratio
-        FROM users WHERE subscription_status = 'active';
-    ''')
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    
-    users_data = []
-    for row in rows:
-        users_data.append({
-            'user_id': row[0],
-            'selected_plan': row[1],
-            'coin_name': row[2],
-            'coin_desc': row[3],
-            'contract': row[4],
-            'buy_link': row[5],
-            'channel': row[6],
-            'msg_per_hour': row[7],
-            'enable_new_buy': bool(row[8]),
-            'link_ratio': row[9] if row[9] is not None else 100
-        })
-    return users_data
-
+# Database functions are centralized in database.py.
+# Initialize the schema once when the bot starts.
 init_db()
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
