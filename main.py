@@ -1237,13 +1237,80 @@ async def get_content_preferences(update: Update, context: ContextTypes.DEFAULT_
         keyboard=[[InlineKeyboardButton("Yes 📊",callback_data='market_yes'),InlineKeyboardButton("No 🚫",callback_data='market_no')],[InlineKeyboardButton("🔙 Back",callback_data='back_to_content_prefs')]]
         await query.edit_message_text("📊 Would you like to receive markets & economy news in this group?\n\nExamples: interest rates, inflation, jobs and major economic data.",reply_markup=InlineKeyboardMarkup(keyboard))
         return CONTENT_PREFS
-    keyboard=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",callback_data='back_to_market_pref')]])
-    await query.edit_message_text("🌐 Blockchain network / ecosystem (optional).\n\nSend a supported network, another network, or type SKIP. Not specifying a network will NOT block registration.",reply_markup=keyboard)
+    keyboard = [
+        [
+            InlineKeyboardButton("🟡 BNB", callback_data='network_BNB'),
+            InlineKeyboardButton("🟣 Solana", callback_data='network_Solana'),
+        ],
+        [
+            InlineKeyboardButton("🔵 Sui", callback_data='network_Sui'),
+            InlineKeyboardButton("⚫ Arc", callback_data='network_Arc'),
+        ],
+        [
+            InlineKeyboardButton("🔴 Robinhood", callback_data='network_Robinhood'),
+        ],
+        [
+            InlineKeyboardButton("⏭️ SKIP — All Networks", callback_data='network_SKIP'),
+        ],
+        [InlineKeyboardButton("🔙 Back", callback_data='back_to_market_pref')],
+    ]
+    await query.edit_message_text(
+        "🌐 Blockchain network / ecosystem (optional).\n\n"
+        "Select a network below. You can also choose SKIP; this will NOT block registration "
+        "and the group will receive posts from all supported networks.",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
     return NETWORK
 
 
+async def get_network_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle the six interactive network choices during setup/editing."""
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == 'back_to_market_pref':
+        keyboard = [
+            [InlineKeyboardButton("Yes 📊", callback_data='market_yes'),
+             InlineKeyboardButton("No 🚫", callback_data='market_no')],
+            [InlineKeyboardButton("🔙 Back", callback_data='back_to_content_prefs')]
+        ]
+        await query.edit_message_text(
+            "📊 Would you like to receive markets & economy news?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return CONTENT_PREFS
+
+    network_map = {
+        'network_BNB': 'BNB',
+        'network_Solana': 'Solana',
+        'network_Sui': 'Sui',
+        'network_Arc': 'Arc',
+        'network_Robinhood': 'Robinhood',
+        'network_SKIP': '',
+    }
+
+    selected = network_map.get(query.data)
+    if selected is None:
+        return NETWORK
+
+    context.user_data['network'] = selected
+
+    if context.user_data.get('is_editing'):
+        return await show_edit_options(update, context)
+
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_network_input')]])
+    selected_label = selected if selected else 'All supported networks'
+    await query.edit_message_text(
+        f"✅ Network selected: {selected_label}\n\n"
+        "7️⃣ Send your Channel Username (e.g., @mychannel) or Channel Link (e.g., https://t.me/mychannel):",
+        reply_markup=keyboard
+    )
+    return CHANNEL
+
+
 async def get_network(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    raw_network=update.message.text.strip()
+    """Backward-compatible text input for network selection."""
+    raw_network = update.message.text.strip()
     context.user_data['network'] = '' if raw_network.lower() in {'skip','none','no','-','n/a','na'} else normalize_network_name(raw_network)
 
     if context.user_data.get('is_editing'):
@@ -1267,17 +1334,21 @@ async def get_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data['channel'] = formatted_channel
 
+    bot_username = context.bot.username or ""
+    bot_username_display = f"@{bot_username}" if bot_username else "the bot"
+
     msg = (
         f"⚠️ IMPORTANT STEP: Admin Rights Required!\n\n"
         f"Please add this bot as an Administrator in your channel `{formatted_channel}` with Post Messages permission.\n\n"
+        f"🤖 Bot to add: `{bot_username_display}`\n\n"
         "📋 Instructions:\n"
-        "1. Copy the bot username below using the button.\n"
+        "1. Open the bot profile using the button below.\n"
         "2. Go to your channel settings -> Administrators -> Add Admin.\n"
-        "3. Paste the username in the search bar, select the bot, and grant posting permission.\n\n"
-        "Click the button below once you have promoted the bot!"
+        "3. Select this bot and grant Post Messages permission.\n\n"
+        "Then click Continue. The bot will verify its administrator status automatically."
     )
     keyboard = [
-        [InlineKeyboardButton("📋 Copy Bot Username (@DJANGO_CRYPTO_BOT)", switch_inline_query_current_chat="@DJANGO_CRYPTO_BOT")],
+        [InlineKeyboardButton("🤖 Open Bot Profile", url=f"https://t.me/{bot_username}" if bot_username else "https://t.me")],
         [InlineKeyboardButton("🔗 I have promoted the bot / Continue", callback_data='verify_admin')],
         [InlineKeyboardButton("🔙 Back", callback_data='back_to_channel_input')]
     ]
@@ -1288,24 +1359,39 @@ async def get_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def verify_admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    
+
     if query.data == 'back_to_channel_input':
+        await query.answer()
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_buy_link')]])
-        await query.edit_message_text("7️⃣ Send your Channel Username or Link (e.g., @mychannel):", reply_markup=keyboard)
+        await query.edit_message_text(
+            "7️⃣ Send your Channel Username or Link (e.g., @mychannel):",
+            reply_markup=keyboard
+        )
         return CHANNEL
 
-    await query.answer()
+    # Acknowledge the callback BEFORE the Telegram API verification call so the
+    # button never appears to be frozen while get_chat_member is running.
+    await query.answer("⏳ Checking administrator status...", show_alert=False)
+
     channel_id = context.user_data.get('channel')
     bot_id = context.bot.id
 
+    if not channel_id:
+        await query.edit_message_text(
+            "❌ Channel information is missing. Please enter the channel again.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_channel_input')]])
+        )
+        return CHANNEL
+
     try:
         member = await context.bot.get_chat_member(chat_id=channel_id, user_id=bot_id)
-        if member.status in ['administrator', 'creator']:
-            await query.answer("✅ Admin status verified successfully!", show_alert=True)
-            
+        status = getattr(member, 'status', '')
+        can_post = getattr(member, 'can_post_messages', None)
+
+        if status == 'administrator' and (can_post is True or can_post is None):
             if context.user_data.get('selected_plan') == 'free':
                 context.user_data['msg_per_hour'] = 4
-                
+
                 keyboard = [
                     [InlineKeyboardButton("0%", callback_data='ratio_0'), InlineKeyboardButton("25%", callback_data='ratio_25'), InlineKeyboardButton("50%", callback_data='ratio_50')],
                     [InlineKeyboardButton("75%", callback_data='ratio_75'), InlineKeyboardButton("100%", callback_data='ratio_100')],
@@ -1323,13 +1409,26 @@ async def verify_admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE
                 reply_markup=keyboard
             )
             return MSG_PER_HOUR
-        else:
-            await query.answer("❌ Bot is not promoted to Admin yet!", show_alert=True)
+
+        if status == 'administrator' and can_post is False:
+            await query.answer(
+                "❌ The bot is Admin, but Post Messages permission is disabled. Enable it and try again.",
+                show_alert=True
+            )
             return VERIFY_ADMIN
 
+        await query.answer(
+            "❌ The bot is not an Administrator of this channel yet.",
+            show_alert=True
+        )
+        return VERIFY_ADMIN
+
     except Exception as e:
-        logging.error(f"Admin verification failed: {e}")
-        await query.answer("❌ Unable to verify! Ensure the bot is added as Admin.", show_alert=True)
+        logging.error(f"Admin verification failed for {channel_id}: {e}")
+        await query.answer(
+            "❌ Verification failed. Check that the channel username is correct and that this bot was added as Administrator with Post Messages permission.",
+            show_alert=True
+        )
         return VERIFY_ADMIN
 
 async def get_msg_per_hour(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1356,17 +1455,17 @@ async def get_link_ratio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     if query.data == 'back_to_verify_admin':
+        bot_username = context.bot.username or ""
+        bot_username_display = f"@{bot_username}" if bot_username else "the bot"
+        channel = context.user_data.get('channel', 'your channel')
         msg = (
             f"⚠️ IMPORTANT STEP: Admin Rights Required!\n\n"
-            f"Please add this bot as an Administrator in your channel `@DJANGO_CRYPTO_BOT`.\n\n"
-            "📋 Instructions:\n"
-            "1. Copy the bot username below using the button.\n"
-            "2. Go to your channel settings -> Administrators -> Add Admin.\n"
-            "3. Paste the username in the search bar, select the bot, and grant posting permission.\n\n"
-            "Click the button below once you have promoted the bot!"
+            f"Please add `{bot_username_display}` as an Administrator in your channel `{channel}` with Post Messages permission.\n\n"
+            f"🤖 Bot: `{bot_username_display}`\n\n"
+            "Then click Continue. The bot will verify its administrator status automatically."
         )
         keyboard = [
-            [InlineKeyboardButton("📋 Copy Bot Username (@DJANGO_CRYPTO_BOT)", switch_inline_query_current_chat="@DJANGO_CRYPTO_BOT")],
+            [InlineKeyboardButton("🤖 Open Bot Profile", url=f"https://t.me/{bot_username}" if bot_username else "https://t.me")],
             [InlineKeyboardButton("🔗 I have promoted the bot / Continue", callback_data='verify_admin')],
             [InlineKeyboardButton("🔙 Back", callback_data='back_to_channel_input')]
         ]
@@ -1549,6 +1648,7 @@ if __name__ == '__main__':
             ],
             NETWORK: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, get_network),
+                CallbackQueryHandler(get_network_choice, pattern='^network_(BNB|Solana|Sui|Arc|Robinhood|SKIP)$'),
                 CallbackQueryHandler(back_to_edit_menu_handler, pattern='^back_to_edit_menu$'),
                 CallbackQueryHandler(get_content_preferences, pattern='^back_to_market_pref$')
             ],
