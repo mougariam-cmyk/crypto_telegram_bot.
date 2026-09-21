@@ -37,10 +37,10 @@ async def verify_admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE
                 [InlineKeyboardButton("🏠 Main Menu", callback_data='back_to_main')]
             ])
             
-            # تحديث الرسالة الحالية وعدم تعليق الأزرار
+            # تحديث الرسالة الحالية واستجابة الأزرار فوراً
             await query.edit_message_text(success_text, reply_markup=keyboard)
             
-            # تنظيف المحادثات السابقة وحذفها أو إغلاق الحالة لمنع التراكم
+            # تفريغ الذاكرة المؤقتة وإنهاء المحادثة لمنع التعليق
             context.user_data.clear()
             return ConversationHandler.END
         else:
