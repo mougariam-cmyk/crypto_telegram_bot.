@@ -1,3 +1,5 @@
 python-telegram-bot==20.7
-requests
-psycopg2-binary
+psycopg2-binary==2.9.10
+requests==2.32.5
+httpx==0.25.2
+google-genai
