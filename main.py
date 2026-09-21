@@ -1038,7 +1038,7 @@ ONBOARDING_LANGUAGES = {
     "ja": "🇯🇵 日本語",
 }
 
-ONBOARDING_INTRO = {
+ONBOARDING_INTRO_TEXT = {
     "en": (
         "👑 DJANGO AI — THE INTELLIGENCE BEHIND YOUR COMMUNITY\n\n"
         "DJANGO is more than an auto-poster. It is an AI-powered command layer built to help crypto projects keep their communities active, responsive and alive — even when the owner is away.\n\n"
@@ -1147,7 +1147,7 @@ async def onboarding_language_selected(update: Update, context: ContextTypes.DEF
     context.user_data["onboarding_seen"] = True
     await asyncio.to_thread(save_onboarding_profile, query.from_user.id, language)
 
-    intro = ONBOARDING_INTRO.get(language, ONBOARDING_INTRO["en"])
+    intro = ONBOARDING_INTRO_TEXT.get(language, ONBOARDING_INTRO_TEXT["en"])
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🚀 Enter DJANGO AI", callback_data="onboarding_continue")],
         [
