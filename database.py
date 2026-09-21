@@ -38,6 +38,7 @@ def init_db():
                 coin_desc TEXT,
                 contract TEXT,
                 buy_link TEXT,
+                x_link TEXT DEFAULT '',
                 channel TEXT NOT NULL,
                 network TEXT DEFAULT '',
                 receive_geopolitical_news INTEGER DEFAULT 1,
@@ -86,6 +87,11 @@ def init_db():
         cursor.execute("""
             ALTER TABLE users
             ADD COLUMN IF NOT EXISTS network TEXT DEFAULT '';
+        """)
+
+        cursor.execute("""
+            ALTER TABLE users
+            ADD COLUMN IF NOT EXISTS x_link TEXT DEFAULT '';
         """)
 
         cursor.execute("""
@@ -163,6 +169,7 @@ def save_user_data(user_id: int, username: str, data: dict):
                 coin_desc,
                 contract,
                 buy_link,
+                x_link,
                 channel,
                 network,
                 receive_geopolitical_news,
@@ -175,7 +182,7 @@ def save_user_data(user_id: int, username: str, data: dict):
                 end_date
             )
             VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s, 'active', %s, %s
             )
             ON CONFLICT (user_id, channel)
@@ -186,6 +193,7 @@ def save_user_data(user_id: int, username: str, data: dict):
                 coin_desc = EXCLUDED.coin_desc,
                 contract = EXCLUDED.contract,
                 buy_link = EXCLUDED.buy_link,
+                x_link = EXCLUDED.x_link,
                 network = EXCLUDED.network,
                 receive_geopolitical_news = EXCLUDED.receive_geopolitical_news,
                 receive_market_news = EXCLUDED.receive_market_news,
@@ -203,6 +211,7 @@ def save_user_data(user_id: int, username: str, data: dict):
             data.get("coin_desc", ""),
             data.get("contract", ""),
             data.get("buy_link", ""),
+            data.get("x_link", ""),
             channel,
             data.get("network", ""),
             1 if data.get("receive_geopolitical_news", True) else 0,
@@ -298,6 +307,7 @@ def get_user_channel_data(user_id: int, channel: str):
                 coin_desc,
                 contract,
                 buy_link,
+                x_link,
                 channel,
                 network,
                 receive_geopolitical_news,
@@ -333,16 +343,17 @@ def get_user_channel_data(user_id: int, channel: str):
             "coin_desc": row[3],
             "contract": row[4],
             "buy_link": row[5],
-            "channel": row[6],
-            "network": row[7] or "",
-            "receive_geopolitical_news": bool(row[8]) if row[8] is not None else True,
-            "receive_market_news": bool(row[9]) if row[9] is not None else True,
-            "msg_per_hour": row[10] if row[10] is not None else 2,
-            "enable_new_buy": bool(row[11]),
-            "link_ratio": row[12] if row[12] is not None else 100,
-            "subscription_status": row[13],
-            "start_date": row[14],
-            "end_date": row[15]
+            "x_link": row[6] or "",
+            "channel": row[7],
+            "network": row[8] or "",
+            "receive_geopolitical_news": bool(row[9]) if row[9] is not None else True,
+            "receive_market_news": bool(row[10]) if row[10] is not None else True,
+            "msg_per_hour": row[11] if row[11] is not None else 2,
+            "enable_new_buy": bool(row[12]),
+            "link_ratio": row[13] if row[13] is not None else 100,
+            "subscription_status": row[14],
+            "start_date": row[15],
+            "end_date": row[16]
         }
 
     finally:
@@ -366,6 +377,7 @@ def get_active_users():
                 coin_desc,
                 contract,
                 buy_link,
+                x_link,
                 channel,
                 network,
                 receive_geopolitical_news,
@@ -393,16 +405,17 @@ def get_active_users():
                 "coin_desc": row[3],
                 "contract": row[4],
                 "buy_link": row[5],
-                "channel": row[6],
-                "network": row[7] or "",
-                "receive_geopolitical_news": bool(row[8]) if row[8] is not None else True,
-                "receive_market_news": bool(row[9]) if row[9] is not None else True,
-                "msg_per_hour": row[10] if row[10] is not None else 2,
-                "enable_new_buy": bool(row[11]),
-                "link_ratio": row[12] if row[12] is not None else 100,
-                "subscription_status": row[13],
-                "start_date": row[14],
-                "end_date": row[15]
+                "x_link": row[6] or "",
+                "channel": row[7],
+                "network": row[8] or "",
+                "receive_geopolitical_news": bool(row[9]) if row[9] is not None else True,
+                "receive_market_news": bool(row[10]) if row[10] is not None else True,
+                "msg_per_hour": row[11] if row[11] is not None else 2,
+                "enable_new_buy": bool(row[12]),
+                "link_ratio": row[13] if row[13] is not None else 100,
+                "subscription_status": row[14],
+                "start_date": row[15],
+                "end_date": row[16]
             })
 
         return users
