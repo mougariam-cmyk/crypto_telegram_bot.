@@ -1,33 +1,23 @@
-import os
-import psycopg2
+from pathlib import Path
 
+code = '''import os
+import psycopg2
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 
 def get_db_connection():
-    """
-    Create a PostgreSQL connection using Render/Supabase DATABASE_URL.
-    """
     db_url = DATABASE_URL
-
     if not db_url:
         raise ValueError("DATABASE_URL is not configured.")
-
     if db_url.startswith("postgres://"):
         db_url = db_url.replace("postgres://", "postgresql://", 1)
-
     return psycopg2.connect(db_url)
 
 
 def init_db():
-    """
-    Create the users table if it does not exist.
-    Also add newer columns when an older version of the table already exists.
-    """
     conn = get_db_connection()
     cursor = conn.cursor()
-
     try:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -48,55 +38,23 @@ def init_db():
                 PRIMARY KEY (user_id, channel)
             );
         """)
-
-        # Migration for databases created with the older schema.
-        cursor.execute("""
-            ALTER TABLE users
-            ADD COLUMN IF NOT EXISTS start_date TEXT;
-        """)
-
-        cursor.execute("""
-            ALTER TABLE users
-            ADD COLUMN IF NOT EXISTS end_date TEXT;
-        """)
-
-        cursor.execute("""
-            ALTER TABLE users
-            ADD COLUMN IF NOT EXISTS subscription_status TEXT DEFAULT 'active';
-        """)
-
-        cursor.execute("""
-            ALTER TABLE users
-            ADD COLUMN IF NOT EXISTS link_ratio INTEGER DEFAULT 100;
-        """)
-
-        cursor.execute("""
-            ALTER TABLE users
-            ADD COLUMN IF NOT EXISTS msg_per_hour INTEGER DEFAULT 2;
-        """)
-
-        cursor.execute("""
-            ALTER TABLE users
-            ADD COLUMN IF NOT EXISTS enable_new_buy INTEGER DEFAULT 0;
-        """)
-
+        cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS start_date TEXT;")
+        cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS end_date TEXT;")
+        cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_status TEXT DEFAULT 'active';")
+        cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS link_ratio INTEGER DEFAULT 100;")
+        cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS msg_per_hour INTEGER DEFAULT 2;")
+        cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS enable_new_buy INTEGER DEFAULT 0;")
         conn.commit()
-
     finally:
         cursor.close()
         conn.close()
 
 
 def save_user_data(user_id: int, username: str, data: dict):
-    """
-    Insert or update a user's channel configuration.
-    """
     conn = get_db_connection()
     cursor = conn.cursor()
-
     try:
         channel = data.get("channel", "")
-
         cursor.execute("""
             SELECT selected_plan
             FROM users
@@ -104,37 +62,17 @@ def save_user_data(user_id: int, username: str, data: dict):
               AND channel = %s
               AND subscription_status = 'active';
         """, (user_id, channel))
-
         existing = cursor.fetchone()
 
         target_plan = data.get("selected_plan", "free")
-
-        # Do not accidentally downgrade an existing paid subscription
-        # when saving normal configuration changes.
-        if (
-            existing
-            and existing[0] != "free"
-            and target_plan == "free"
-            and not data.get("is_editing")
-        ):
+        if existing and existing[0] != "free" and target_plan == "free" and not data.get("is_editing"):
             target_plan = existing[0]
 
         cursor.execute("""
             INSERT INTO users (
-                user_id,
-                username,
-                selected_plan,
-                coin_name,
-                coin_desc,
-                contract,
-                buy_link,
-                channel,
-                msg_per_hour,
-                enable_new_buy,
-                link_ratio,
-                subscription_status,
-                start_date,
-                end_date
+                user_id, username, selected_plan, coin_name, coin_desc,
+                contract, buy_link, channel, msg_per_hour, enable_new_buy,
+                link_ratio, subscription_status, start_date, end_date
             )
             VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s,
@@ -169,52 +107,32 @@ def save_user_data(user_id: int, username: str, data: dict):
             data.get("start_date"),
             data.get("end_date")
         ))
-
         conn.commit()
-
     finally:
         cursor.close()
         conn.close()
 
 
 def cancel_user_subscription(user_id: int, channel: str):
-    """
-    Mark a channel subscription as cancelled.
-    """
     conn = get_db_connection()
     cursor = conn.cursor()
-
     try:
         normalized_channel = channel.replace("@", "")
-
         cursor.execute("""
             UPDATE users
             SET subscription_status = 'cancelled'
             WHERE user_id = %s
-              AND (
-                  channel = %s
-                  OR channel = %s
-              );
-        """, (
-            user_id,
-            channel,
-            f"@{normalized_channel}"
-        ))
-
+              AND (channel = %s OR channel = %s);
+        """, (user_id, channel, f"@{normalized_channel}"))
         conn.commit()
-
     finally:
         cursor.close()
         conn.close()
 
 
 def get_user_channels(user_id: int):
-    """
-    Return all active channels belonging to a user.
-    """
     conn = get_db_connection()
     cursor = conn.cursor()
-
     try:
         cursor.execute("""
             SELECT channel, coin_name
@@ -222,63 +140,31 @@ def get_user_channels(user_id: int):
             WHERE user_id = %s
               AND subscription_status = 'active'
             ORDER BY channel;
-        """)
-
+        """, (user_id,))
         return cursor.fetchall()
-
     finally:
         cursor.close()
         conn.close()
 
 
 def get_user_channel_data(user_id: int, channel: str):
-    """
-    Return channel data.
-
-    Important:
-    We intentionally do not filter subscription_status here.
-    The publisher needs to be able to see a cancelled record and stop
-    its background task.
-    """
     conn = get_db_connection()
     cursor = conn.cursor()
-
     try:
         normalized_channel = channel.replace("@", "")
-
         cursor.execute("""
             SELECT
-                user_id,
-                selected_plan,
-                coin_name,
-                coin_desc,
-                contract,
-                buy_link,
-                channel,
-                msg_per_hour,
-                enable_new_buy,
-                link_ratio,
-                subscription_status,
-                start_date,
-                end_date
+                user_id, selected_plan, coin_name, coin_desc, contract,
+                buy_link, channel, msg_per_hour, enable_new_buy, link_ratio,
+                subscription_status, start_date, end_date
             FROM users
             WHERE user_id = %s
-              AND (
-                  channel = %s
-                  OR channel = %s
-              )
+              AND (channel = %s OR channel = %s)
             LIMIT 1;
-        """, (
-            user_id,
-            channel,
-            f"@{normalized_channel}"
-        ))
-
+        """, (user_id, channel, f"@{normalized_channel}"))
         row = cursor.fetchone()
-
         if not row:
             return None
-
         return {
             "user_id": row[0],
             "selected_plan": row[1],
@@ -292,48 +178,29 @@ def get_user_channel_data(user_id: int, channel: str):
             "link_ratio": row[9] if row[9] is not None else 100,
             "subscription_status": row[10],
             "start_date": row[11],
-            "end_date": row[12]
+            "end_date": row[12],
         }
-
     finally:
         cursor.close()
         conn.close()
 
 
 def get_active_users():
-    """
-    Return all active channel configurations.
-    """
     conn = get_db_connection()
     cursor = conn.cursor()
-
     try:
         cursor.execute("""
             SELECT
-                user_id,
-                selected_plan,
-                coin_name,
-                coin_desc,
-                contract,
-                buy_link,
-                channel,
-                msg_per_hour,
-                enable_new_buy,
-                link_ratio,
-                subscription_status,
-                start_date,
-                end_date
+                user_id, selected_plan, coin_name, coin_desc, contract,
+                buy_link, channel, msg_per_hour, enable_new_buy, link_ratio,
+                subscription_status, start_date, end_date
             FROM users
             WHERE subscription_status = 'active'
             ORDER BY user_id, channel;
         """)
-
         rows = cursor.fetchall()
-
-        users = []
-
-        for row in rows:
-            users.append({
+        return [
+            {
                 "user_id": row[0],
                 "selected_plan": row[1],
                 "coin_name": row[2],
@@ -346,11 +213,16 @@ def get_active_users():
                 "link_ratio": row[9] if row[9] is not None else 100,
                 "subscription_status": row[10],
                 "start_date": row[11],
-                "end_date": row[12]
-            })
-
-        return users
-
+                "end_date": row[12],
+            }
+            for row in rows
+        ]
     finally:
         cursor.close()
         conn.close()
+'''
+
+path = Path("/mnt/data/database.py")
+path.write_text(code, encoding="utf-8")
+compile(code, str(path), "exec")
+print("تم إنشاء database.py المصحح والتحقق من Syntax بنجاح.")
