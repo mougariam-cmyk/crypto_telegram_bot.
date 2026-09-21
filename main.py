@@ -7,7 +7,7 @@ import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from google import genai
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, 
     CallbackQueryHandler, ConversationHandler, filters, ContextTypes
@@ -150,7 +150,7 @@ def get_user_channel_data(user_id: int, channel: str):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
-        SELECT selected_plan, coin_name, coin_desc, contract, buy_link, channel, msg_per_hour, enable_new_buy, link_ratio
+        SELECT selected_plan, coin_name, coin_desc, contract, buy_link, channel, msg_per_hour, enable_new_buy, link_ratio, user_id
         FROM users WHERE user_id = %s AND (channel = %s OR channel = %s) AND subscription_status = 'active';
     ''', (user_id, channel, f"@{channel}" if not channel.startswith('@') else channel.replace('@', '')))
     row = cursor.fetchone()
@@ -158,7 +158,6 @@ def get_user_channel_data(user_id: int, channel: str):
     conn.close()
     if row:
         return {
-            'user_id': user_id,
             'selected_plan': row[0],
             'coin_name': row[1],
             'coin_desc': row[2],
@@ -167,7 +166,8 @@ def get_user_channel_data(user_id: int, channel: str):
             'channel': row[5],
             'msg_per_hour': row[6],
             'enable_new_buy': bool(row[7]),
-            'link_ratio': row[8] if row[8] is not None else 100
+            'link_ratio': row[8] if row[8] is not None else 100,
+            'user_id': row[9]
         }
     return None
 
@@ -225,7 +225,6 @@ threading.Thread(target=run_health_check_server, daemon=True).start()
 
 ACTIVE_PUBLISH_TASKS = {}
 
-# الأزرار الدائمة أسفل الشاشة (Persistent Menu)
 PERSISTENT_REPLY_KEYBOARD = ReplyKeyboardMarkup(
     [["🚀 Start", "❌ Cancel"]],
     resize_keyboard=True,
@@ -338,7 +337,6 @@ def generate_post(data):
     return post_text
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """إلغاء العملية الحالية وحذف الأزرار الدائمة إذا لزم أو العودة للرئيسية"""
     context.user_data.clear()
     msg = "❌ Operation cancelled. Send /start to begin again."
     if update.message:
@@ -394,7 +392,6 @@ async def show_subscription_plans(update: Update, context: ContextTypes.DEFAULT_
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    # ضمان إرسال الأزرار الدائمة أسفل الشاشة مع أول رسالة تفاعلية
     if update.callback_query:
         try:
             await update.callback_query.message.reply_text(welcome_msg, reply_markup=reply_markup)
@@ -402,7 +399,7 @@ async def show_subscription_plans(update: Update, context: ContextTypes.DEFAULT_
         except Exception:
             await update.callback_query.edit_message_text(welcome_msg, reply_markup=reply_markup)
     else:
-        await update.message.reply_text(welcome_msg, reply_markup=PERSISTENT_REPLY_KEYBOARD)
+        await update.message.reply_text("✨ Initializing...", reply_markup=PERSISTENT_REPLY_KEYBOARD)
         await update.message.reply_text(welcome_msg, reply_markup=reply_markup)
         
     return PLAN_SELECT
@@ -601,97 +598,101 @@ async def back_to_plans_handler(update: Update, context: ContextTypes.DEFAULT_TY
     return await show_subscription_plans(update, context)
 
 async def get_coin_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        await update.message.delete()
-    except Exception:
-        pass
+    if update.message:
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
 
     context.user_data['coin_name'] = update.message.text.strip()
     if context.user_data.get('is_editing'):
         return await show_edit_options(update, context)
     
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_coin_name')]])
-    
+    text = "2️⃣ Send a brief Description / Hype Points for your token:"
+
     if 'last_bot_msg_id' in context.user_data:
         try:
             await context.bot.edit_message_text(
                 chat_id=update.effective_chat.id,
                 message_id=context.user_data['last_bot_msg_id'],
-                text="2️⃣ Send a brief Description / Hype Points for your token:",
+                text=text,
                 reply_markup=keyboard
             )
+            return COIN_DESC
         except Exception:
-            sent = await update.message.reply_text("2️⃣ Send a brief Description / Hype Points for your token:", reply_markup=keyboard, reply_markup_persistent=PERSISTENT_REPLY_KEYBOARD)
-            context.user_data['last_bot_msg_id'] = sent.message_id
-    else:
-        sent = await update.message.reply_text("2️⃣ Send a brief Description / Hype Points for your token:", reply_markup=keyboard)
-        context.user_data['last_bot_msg_id'] = sent.message_id
-
+            pass
+            
+    sent = await update.message.reply_text(text, reply_markup=keyboard)
+    context.user_data['last_bot_msg_id'] = sent.message_id
     return COIN_DESC
 
 async def get_coin_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        await update.message.delete()
-    except Exception:
-        pass
+    if update.message:
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
 
     context.user_data['coin_desc'] = update.message.text.strip()
     if context.user_data.get('is_editing'):
         return await show_edit_options(update, context)
         
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_coin_desc')]])
-    
+    text = "3️⃣ Send your Token Contract Address (CA):"
+
     if 'last_bot_msg_id' in context.user_data:
         try:
             await context.bot.edit_message_text(
                 chat_id=update.effective_chat.id,
                 message_id=context.user_data['last_bot_msg_id'],
-                text="3️⃣ Send your Token Contract Address (CA):",
+                text=text,
                 reply_markup=keyboard
             )
+            return CONTRACT
         except Exception:
-            sent = await update.message.reply_text("3️⃣ Send your Token Contract Address (CA):", reply_markup=keyboard)
-            context.user_data['last_bot_msg_id'] = sent.message_id
-    else:
-        sent = await update.message.reply_text("3️⃣ Send your Token Contract Address (CA):", reply_markup=keyboard)
-        context.user_data['last_bot_msg_id'] = sent.message_id
-
+            pass
+            
+    sent = await update.message.reply_text(text, reply_markup=keyboard)
+    context.user_data['last_bot_msg_id'] = sent.message_id
     return CONTRACT
 
 async def get_contract(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        await update.message.delete()
-    except Exception:
-        pass
+    if update.message:
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
 
     context.user_data['contract'] = update.message.text.strip()
     if context.user_data.get('is_editing'):
         return await show_edit_options(update, context)
         
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_contract')]])
-    
+    text = "4️⃣ Send your DEXScreener or Buy Link:"
+
     if 'last_bot_msg_id' in context.user_data:
         try:
             await context.bot.edit_message_text(
                 chat_id=update.effective_chat.id,
                 message_id=context.user_data['last_bot_msg_id'],
-                text="4️⃣ Send your DEXScreener or Buy Link:",
+                text=text,
                 reply_markup=keyboard
             )
+            return BUY_LINK
         except Exception:
-            sent = await update.message.reply_text("4️⃣ Send your DEXScreener or Buy Link:", reply_markup=keyboard)
-            context.user_data['last_bot_msg_id'] = sent.message_id
-    else:
-        sent = await update.message.reply_text("4️⃣ Send your DEXScreener or Buy Link:", reply_markup=keyboard)
-        context.user_data['last_bot_msg_id'] = sent.message_id
-
+            pass
+            
+    sent = await update.message.reply_text(text, reply_markup=keyboard)
+    context.user_data['last_bot_msg_id'] = sent.message_id
     return BUY_LINK
 
 async def get_buy_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        await update.message.delete()
-    except Exception:
-        pass
+    if update.message:
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
 
     context.user_data['buy_link'] = update.message.text.strip()
     
@@ -709,28 +710,28 @@ async def get_buy_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text=text,
                 reply_markup=keyboard
             )
+            return CHANNEL
         except Exception:
-            sent = await update.message.reply_text(text, reply_markup=keyboard)
-            context.user_data['last_bot_msg_id'] = sent.message_id
-    else:
-        sent = await update.message.reply_text(text, reply_markup=keyboard)
-        context.user_data['last_bot_msg_id'] = sent.message_id
-
+            pass
+            
+    sent = await update.message.reply_text(text, reply_markup=keyboard)
+    context.user_data['last_bot_msg_id'] = sent.message_id
     return CHANNEL
 
 async def get_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        await update.message.delete()
-    except Exception:
-        pass
+    if update.message:
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
 
     raw_channel = update.message.text.strip()
     formatted_channel = parse_channel_input(raw_channel)
     user_id = update.effective_user.id
 
     existing_data = get_user_channel_data(user_id, formatted_channel)
-    if existing_data and existing_data['selected_plan'] != 'free' and context.user_data.get('selected_plan') == 'free':
-        context.user_data['selected_plan'] = existing_data['selected_plan']
+    if existing_data and existing_data.get('selected_plan') != 'free' and context.user_data.get('selected_plan') == 'free':
+        context.user_data['selected_plan'] = existing_data.get('selected_plan')
 
     context.user_data['channel'] = formatted_channel
 
@@ -758,13 +759,12 @@ async def get_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text=msg,
                 reply_markup=reply_markup
             )
+            return VERIFY_ADMIN
         except Exception:
-            sent = await update.message.reply_text(msg, reply_markup=reply_markup)
-            context.user_data['last_bot_msg_id'] = sent.message_id
-    else:
-        sent = await update.message.reply_text(msg, reply_markup=reply_markup)
-        context.user_data['last_bot_msg_id'] = sent.message_id
-
+            pass
+            
+    sent = await update.message.reply_text(msg, reply_markup=reply_markup)
+    context.user_data['last_bot_msg_id'] = sent.message_id
     return VERIFY_ADMIN
 
 async def verify_admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -810,7 +810,6 @@ async def verify_admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     except Exception as e:
         logging.error(f"Admin verification failed: {e}")
-        # تم تصحيح المشكلة هنا: إذا لم يتم التحقق تلقائياً بسبب قيود تليجرام، نسمح بمرور المستخدم وعدم توقف الأزرار
         await query.answer("⚠️ Proceeding to next step...", show_alert=True)
         
         if context.user_data.get('selected_plan') == 'free':
@@ -834,10 +833,11 @@ async def verify_admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE
         return MSG_PER_HOUR
 
 async def get_msg_per_hour(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        await update.message.delete()
-    except Exception:
-        pass
+    if update.message:
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
 
     try:
         count = int(update.message.text.strip())
@@ -864,13 +864,12 @@ async def get_msg_per_hour(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text=text,
                 reply_markup=reply_markup
             )
+            return LINK_RATIO
         except Exception:
-            sent = await update.message.reply_text(text, reply_markup=reply_markup)
-            context.user_data['last_bot_msg_id'] = sent.message_id
-    else:
-        sent = await update.message.reply_text(text, reply_markup=reply_markup)
-        context.user_data['last_bot_msg_id'] = sent.message_id
-
+            pass
+            
+    sent = await update.message.reply_text(text, reply_markup=reply_markup)
+    context.user_data['last_bot_msg_id'] = sent.message_id
     return LINK_RATIO
 
 async def get_link_ratio(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -925,6 +924,9 @@ async def finish_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     username = update.effective_user.username or ""
     data = context.user_data
+    
+    # التأكد من حفظ user_id ضمن القاموس لتجنب أخطاء المهام في الخلفية
+    data['user_id'] = user_id
 
     save_user_data(user_id, username, data)
 
@@ -958,16 +960,17 @@ async def finish_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     return ConversationHandler.END
 
-# ==========================================
-# BACKGROUND AUTOMATED PUBLISHING LOOP
-# ==========================================
 async def channel_publisher_task(data, application):
     channel = data['channel']
     logging.info(f"Started background publisher task for channel: {channel}")
 
     try:
         while True:
-            current_data = get_user_channel_data(data['user_id'], channel)
+            target_user_id = data.get('user_id')
+            if not target_user_id:
+                break
+                
+            current_data = get_user_channel_data(target_user_id, channel)
             if not current_data or current_data.get('subscription_status') == 'cancelled':
                 logging.info(f"Stopping publisher task for {channel} due to cancellation or removal.")
                 break
@@ -1015,9 +1018,6 @@ async def restore_active_tasks(application):
             ACTIVE_PUBLISH_TASKS[channel] = loop.create_task(channel_publisher_task(user, application))
     logging.info(f"Restored {len(ACTIVE_PUBLISH_TASKS)} active publishing tasks from database.")
 
-# ==========================================
-# MAIN APPLICATION ENTRY POINT
-# ==========================================
 def main():
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
