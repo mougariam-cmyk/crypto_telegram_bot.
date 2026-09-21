@@ -117,91 +117,89 @@ threading.Thread(target=run_health_check_server, daemon=True).start()
 ACTIVE_PUBLISH_TASKS = {}
 
 # ==========================================
-# PRIVATE SETUP FLOW CLEANUP / MENU
+# PRIVATE SETUP FLOW CLEANUP
 # ==========================================
 FLOW_MESSAGE_IDS_KEY = "_flow_message_ids"
-
+FLOW_CURRENT_MESSAGE_KEY = "_flow_current_message_id"
 
 def _flow_ids(context):
     return context.user_data.setdefault(FLOW_MESSAGE_IDS_KEY, set())
-
 
 def track_flow_message(context, message_id):
     if message_id:
         _flow_ids(context).add(int(message_id))
 
-
 def track_flow_update(update, context):
-    """Track private setup messages so the Menu action can clean them up."""
+    # Keep only a lightweight record; the active flow message is managed
+    # separately so each step can replace the previous screen.
     if update.effective_chat and update.effective_chat.type == "private":
-        if update.effective_message:
-            track_flow_message(context, update.effective_message.message_id)
-        if update.callback_query and update.callback_query.message:
-            track_flow_message(context, update.callback_query.message.message_id)
+        if update.effective_message and update.effective_message.from_user:
+            # Incoming user messages are intentionally not retained.
+            pass
 
-
-def add_menu_button(reply_markup=None):
-    rows = []
-    if reply_markup:
-        rows = [list(row) for row in reply_markup.inline_keyboard]
-    if not any(any(getattr(btn, "callback_data", None) == "menu_home" for btn in row) for row in rows):
-        rows.append([InlineKeyboardButton("🏠 Menu", callback_data="menu_home")])
-    return InlineKeyboardMarkup(rows)
-
+async def _delete_flow_message(context, chat_id, message_id):
+    if not message_id:
+        return
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception:
+        pass
 
 async def send_flow_reply(update, context, text, reply_markup=None, **kwargs):
-    """Send a setup-flow message and remember it for cleanup."""
-    markup = add_menu_button(reply_markup)
-    message = await update.message.reply_text(text, reply_markup=markup, **kwargs)
+    """Maintain one private setup screen instead of opening a new screen each step."""
+    chat = update.effective_chat
+    if not chat:
+        return None
+
+    old_id = context.user_data.get(FLOW_CURRENT_MESSAGE_KEY)
+    if old_id:
+        await _delete_flow_message(context, chat.id, old_id)
+
+    # Remove the user's previous text input when Telegram allows it. This keeps
+    # the private setup chat visually clean and leaves one active bot screen.
+    if update.message and update.message.from_user and update.message.chat.type == "private":
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+
+    message = await context.bot.send_message(chat_id=chat.id, text=text, reply_markup=reply_markup, **kwargs)
+    context.user_data[FLOW_CURRENT_MESSAGE_KEY] = message.message_id
     track_flow_message(context, message.message_id)
     return message
 
-
 async def edit_flow_message(query, context, text, reply_markup=None, **kwargs):
-    """Edit a setup message while ensuring it always has a Menu button."""
-    if query and query.message:
-        track_flow_message(context, query.message.message_id)
-    markup = add_menu_button(reply_markup)
-    return await query.edit_message_text(text, reply_markup=markup, **kwargs)
-
+    """Edit the current setup screen; never create a second screen."""
+    if not query or not query.message:
+        return None
+    context.user_data[FLOW_CURRENT_MESSAGE_KEY] = query.message.message_id
+    track_flow_message(context, query.message.message_id)
+    return await query.edit_message_text(text, reply_markup=reply_markup, **kwargs)
 
 async def cleanup_private_flow(update, context):
-    """Best-effort deletion of the current setup conversation's old messages."""
     chat = update.effective_chat
     if not chat or chat.type != "private":
         return
 
     ids = set(_flow_ids(context))
-    keep_id = None
-    if update.callback_query and update.callback_query.message:
-        keep_id = update.callback_query.message.message_id
-    elif update.effective_message:
-        keep_id = update.effective_message.message_id
-    if keep_id:
-        ids.discard(keep_id)
+    current = context.user_data.get(FLOW_CURRENT_MESSAGE_KEY)
+    if current:
+        ids.add(int(current))
 
-    # Telegram imposes deletion limits; delete individually and ignore messages
-    # that are already gone or cannot legally be deleted.
     for message_id in sorted(ids):
-        try:
-            await context.bot.delete_message(chat_id=chat.id, message_id=message_id)
-        except Exception:
-            pass
+        await _delete_flow_message(context, chat.id, message_id)
 
     context.user_data.pop(FLOW_MESSAGE_IDS_KEY, None)
-
+    context.user_data.pop(FLOW_CURRENT_MESSAGE_KEY, None)
 
 async def menu_home_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await cleanup_private_flow(update, context)
-    # Start from a clean state and present the real main menu.
     return await start(update, context)
 
-
 async def flow_message_tracker(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Runs before the conversation handlers and only records IDs; it never
-    # consumes the update.
+    # Non-consuming tracker retained for compatibility with the handler setup.
     track_flow_update(update, context)
 
 BUY_TEMPLATES = [
@@ -1004,7 +1002,9 @@ async def group_message_guard(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    channels = get_user_channels(user_id)
+    # Database access can block on a remote PostgreSQL/Supabase connection.
+    # Never block Telegram's event loop while handling /start.
+    channels = await asyncio.to_thread(get_user_channels, user_id)
 
     if channels:
         keyboard = [
@@ -1054,7 +1054,7 @@ async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await show_subscription_plans(update, context)
     elif query.data == 'menu_edit_existing':
         user_id = query.from_user.id
-        channels = get_user_channels(user_id)
+        channels = await asyncio.to_thread(get_user_channels, user_id)
         
         keyboard = []
         for ch, coin in channels:
@@ -1158,11 +1158,11 @@ async def edit_options_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         return BUY_LINK
     elif data == 'opt_x_link':
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⏭️ Skip / Clear X Link", callback_data='xlink_skip_edit')], [InlineKeyboardButton("🔙 Back", callback_data='back_to_edit_menu')]])
-        await edit_flow_message(query, context, "5️⃣ Send your official X / Twitter link (e.g., https://x.com/yourproject):", reply_markup=add_menu_button(keyboard))
+        await edit_flow_message(query, context, "5️⃣ Send your official X / Twitter link (e.g., https://x.com/yourproject):", reply_markup=keyboard)
         return X_LINK
     elif data == 'opt_network':
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_edit_menu')]])
-        await edit_flow_message(query, context, "6️⃣ Select the blockchain network / ecosystem of the token:", reply_markup=add_menu_button(keyboard))
+        await edit_flow_message(query, context, "6️⃣ Select the blockchain network / ecosystem of the token:", reply_markup=keyboard)
         return NETWORK
     elif data == 'opt_geo_news':
         keyboard=[[InlineKeyboardButton("Yes 🌍",callback_data='geo_edit_yes'),InlineKeyboardButton("No 🚫",callback_data='geo_edit_no')],[InlineKeyboardButton("🔙 Back",callback_data='back_to_edit_menu')]]
@@ -1308,11 +1308,11 @@ async def get_buy_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if context.user_data.get('is_editing'):
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⏭️ Skip / Clear X Link", callback_data='xlink_skip_edit')], [InlineKeyboardButton("🔙 Back", callback_data='back_to_edit_menu')]])
-        await send_flow_reply(update, context, "5️⃣ Send your official X / Twitter link (e.g., https://x.com/yourproject):", reply_markup=keyboard)
+        await send_flow_reply(update, context, "5️⃣ Official X / Twitter\n\nPaste your project X / Twitter link here (optional).", reply_markup=keyboard)
         return X_LINK
 
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⏭️ Skip", callback_data='xlink_skip')], [InlineKeyboardButton("🔙 Back", callback_data='back_to_buy_link')]])
-    await send_flow_reply(update, context, "5️⃣ Send your official X / Twitter link (e.g., https://x.com/yourproject). This is optional:", reply_markup=keyboard)
+    await send_flow_reply(update, context, "5️⃣ Official X / Twitter\n\nPaste your project X / Twitter link here (optional).", reply_markup=keyboard)
     return X_LINK
 
 
@@ -1334,11 +1334,11 @@ async def x_link_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == 'xlink_skip':
         context.user_data['x_link'] = ''
         keyboard=[[InlineKeyboardButton("Yes 🌍",callback_data='geo_yes'),InlineKeyboardButton("No 🚫",callback_data='geo_no')],[InlineKeyboardButton("🔙 Back",callback_data='back_to_buy_link')]]
-        await edit_flow_message(query, context, "🌍 Would you like to receive geopolitical news that may affect markets in this group?", reply_markup=add_menu_button(InlineKeyboardMarkup(keyboard)))
+        await edit_flow_message(query, context, "🌍 Would you like to receive geopolitical news that may affect markets in this group?", reply_markup=InlineKeyboardMarkup(keyboard))
         return CONTENT_PREFS
     if query.data == 'back_to_buy_link':
         keyboard=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",callback_data='back_to_contract')]])
-        await edit_flow_message(query, context, "4️⃣ Send your DEXScreener or Buy Link:", reply_markup=add_menu_button(keyboard))
+        await edit_flow_message(query, context, "4️⃣ Send your DEXScreener or Buy Link:", reply_markup=keyboard)
         return BUY_LINK
     return X_LINK
 
@@ -1737,9 +1737,12 @@ def restart_all_active_tasks(application):
             ACTIVE_PUBLISH_TASKS[channel] = task
 
 async def post_init(application):
-    await ensure_daily_content_pool()
+    # Do NOT wait for Gemini during startup. A remote API/quota timeout here
+    # previously made /start appear frozen. Startup must become responsive
+    # immediately; content generation runs in the background.
     restart_all_active_tasks(application)
-    logging.info("Bot initialized, central content pool checked, and background publishers started.")
+    application.create_task(ensure_daily_content_pool())
+    logging.info("Bot initialized; publishers/content pool are running in the background.")
 
 # ==========================================
 # MAIN FUNCTION & BOT STARTUP
@@ -1848,8 +1851,6 @@ if __name__ == '__main__':
     # button perform best-effort cleanup of the current setup flow.
     application.add_handler(CallbackQueryHandler(flow_message_tracker, pattern='.*', block=False), group=-1)
     application.add_handler(MessageHandler(filters.ALL, flow_message_tracker, block=False), group=-1)
-    application.add_handler(CallbackQueryHandler(menu_home_handler, pattern='^menu_home$'), group=2)
-
     # Community interaction handlers: these do not alter the existing setup flow.
     application.add_handler(
         MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, group_message_guard),
