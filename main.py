@@ -21,52 +21,53 @@ from database import (
     cancel_user_subscription,
     get_user_channels,
     get_user_channel_data,
-    get_active_users
+    get_active_users,
+    replace_content_pool,
+    get_content_pool_stats,
+    get_content_pool_posts
 )
 
 # ==========================================
 # SEPARATED GEMINI API KEYS
 # ==========================================
-# KEY 1 is reserved exclusively for AI post generation.
-# KEYS 2-4 are reserved for group AI replies/moderation.
-# IMPORTANT: for real quota separation, keys 2-4 should belong to
-# different Google AI/API projects. Multiple keys from one project
-# normally share that project's quota.
-GEMINI_POSTS_API_KEY = os.getenv("GEMINI_API_KEY_1", "").strip()
+# POST KEYS 1-2: central content generation only.
+# GROUP KEYS 3-8: member answers/moderation only.
+# Keep these keys in separate API projects when quota separation is needed.
+GEMINI_POST_API_KEYS = [
+    os.getenv("GEMINI_API_KEY_1", "").strip(),
+    os.getenv("GEMINI_API_KEY_2", "").strip(),
+]
+GEMINI_POST_API_KEYS = [k for k in GEMINI_POST_API_KEYS if k]
 
 GEMINI_GROUP_API_KEYS = [
-    os.getenv("GEMINI_API_KEY_2", "").strip(),
     os.getenv("GEMINI_API_KEY_3", "").strip(),
     os.getenv("GEMINI_API_KEY_4", "").strip(),
+    os.getenv("GEMINI_API_KEY_5", "").strip(),
+    os.getenv("GEMINI_API_KEY_6", "").strip(),
+    os.getenv("GEMINI_API_KEY_7", "").strip(),
+    os.getenv("GEMINI_API_KEY_8", "").strip(),
 ]
 GEMINI_GROUP_API_KEYS = [k for k in GEMINI_GROUP_API_KEYS if k]
 
-# Backward-compatible fallback if only the old single key is configured.
-if not GEMINI_POSTS_API_KEY and not GEMINI_GROUP_API_KEYS:
+# Legacy single-key fallback only when no separated keys are configured.
+if not GEMINI_POST_API_KEYS and not GEMINI_GROUP_API_KEYS:
     legacy_key = os.getenv("GEMINI_API_KEY", "").strip()
     if legacy_key:
-        GEMINI_POSTS_API_KEY = legacy_key
+        GEMINI_POST_API_KEYS = [legacy_key]
         GEMINI_GROUP_API_KEYS = [legacy_key]
 
+_post_api_key_index = 0
 _group_api_key_index = 0
 
-def get_posts_gemini_client():
-    """Return the client reserved ONLY for AI post generation."""
-    if not GEMINI_POSTS_API_KEY:
+def get_next_post_gemini_client():
+    global _post_api_key_index
+    if not GEMINI_POST_API_KEYS:
         return None
-    return genai.Client(api_key=GEMINI_POSTS_API_KEY)
-
-def get_next_group_gemini_client():
-    """Rotate only through keys 2-4, reserved for group AI."""
-    global _group_api_key_index
-    if not GEMINI_GROUP_API_KEYS:
-        return None
-    key = GEMINI_GROUP_API_KEYS[_group_api_key_index % len(GEMINI_GROUP_API_KEYS)]
-    _group_api_key_index += 1
+    key = GEMINI_POST_API_KEYS[_post_api_key_index % len(GEMINI_POST_API_KEYS)]
+    _post_api_key_index += 1
     return genai.Client(api_key=key)
 
 def get_group_gemini_clients_in_rotation():
-    """Return each configured group key once, starting at the current rotation point."""
     global _group_api_key_index
     if not GEMINI_GROUP_API_KEYS:
         return []
@@ -108,8 +109,8 @@ threading.Thread(target=run_health_check_server, daemon=True).start()
 (
     MAIN_MENU, PLAN_SELECT, COIN_NAME, COIN_DESC, CONTRACT, 
     BUY_LINK, CHANNEL, VERIFY_ADMIN, MSG_PER_HOUR, LINK_RATIO, ENABLE_NEW_BUY, 
-    EDIT_SELECT_CHANNEL, EDIT_OPTIONS_MENU, CONFIRM_CANCEL_SUB
-) = range(14)
+    EDIT_SELECT_CHANNEL, EDIT_OPTIONS_MENU, CONFIRM_CANCEL_SUB, NETWORK, CONTENT_PREFS
+) = range(16)
 
 ACTIVE_PUBLISH_TASKS = {}
 
@@ -158,7 +159,7 @@ def parse_channel_input(user_input: str) -> str:
 
 def generate_ai_post(data, include_links=True):
     try:
-        client = get_posts_gemini_client()
+        client = get_next_post_gemini_client()
         if not client:
             logging.warning("No GEMINI_API_KEY_1 configured for AI posts; using fallback_db.py")
             return get_fallback_message(data)
@@ -280,32 +281,176 @@ Previous posts to avoid repeating:
         return get_fallback_message(data)
 
 
-def generate_post(data):
-    link_ratio = data.get('link_ratio', 100) / 100.0
-    should_include_links = (random.random() < link_ratio)
+# ==========================================
+# CENTRAL AI CONTENT POOL
+# ==========================================
+NETWORKS_FOR_POOL = ["BNB", "Solana", "Sui", "Arc", "Robinhood"]
+CONTENT_POOL_LOCK = asyncio.Lock()
+CONTENT_POOL_CACHE = {"count": 0, "batch_date": None}
+CONTENT_DELIVERY_STATE = {}
+COMMUNITY_HYPE_PROBABILITY = 0.20
 
-    if not should_include_links:
-        # Keep the existing link-ratio logic, but replace the old fixed
-        # community templates with genuinely varied AI-generated posts.
-        post_text = generate_ai_post(data, include_links=False)
+
+def _extract_json_posts(text):
+    import json
+    if not text:
+        return []
+    cleaned = text.strip()
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    try:
+        value = json.loads(cleaned)
+        return value if isinstance(value, list) else []
+    except Exception:
+        match = re.search(r"\[.*\]", cleaned, flags=re.DOTALL)
+        if not match:
+            return []
+        try:
+            value = json.loads(match.group(0))
+            return value if isinstance(value, list) else []
+        except Exception:
+            return []
+
+
+def _generate_pool_with_client(client, prompt):
+    try:
+        response = client.models.generate_content(model="gemini-3.6-flash", contents=prompt)
+        return _extract_json_posts(response.text if response else "")
+    except Exception as e:
+        logging.error(f"Central content generation failed: {e}")
+        return []
+
+
+async def ensure_daily_content_pool():
+    """Ensure today's shared 30-post content pool exists."""
+    async with CONTENT_POOL_LOCK:
+        count, batch_date = get_content_pool_stats()
+        from datetime import date
+        if count >= 30 and str(batch_date) == str(date.today()):
+            return True
+        if not GEMINI_POST_API_KEYS:
+            logging.warning("No post-generation Gemini keys configured; central pool not generated.")
+            return False
+
+        global_prompt = """
+Create exactly 15 short English crypto-community posts as a JSON array.
+Return ONLY valid JSON:
+[{"category":"geopolitical|markets|crypto|question","slot":"morning|midday|evening|any","content":"..."}]
+
+EXACTLY: 3 geopolitical posts (one morning, one midday, one evening);
+3 markets/economy posts about rates, inflation, jobs, GDP, central banks or major macro data;
+4 broad crypto posts; 5 evergreen community questions.
+Every question MUST contain the exact placeholder {coin_name}.
+Do not invent breaking events, prices, statistics, partnerships or announcements.
+Do not give investment advice, guarantee profits, or use political persuasion.
+Keep posts concise (normally 2-5 short lines).
+"""
+        network_prompt = f"""
+Create exactly 15 short English crypto ecosystem posts as a JSON array.
+Return ONLY valid JSON: [{{"network":"NETWORK","category":"network","content":"..."}}]
+Create exactly 3 posts for EACH: {', '.join(NETWORKS_FOR_POOL)}.
+Discuss technology, development, builders, DeFi, infrastructure, adoption or ecosystem themes.
+Do not invent current breaking events, prices, partnerships or statistics.
+Keep each post concise (2-5 short lines).
+"""
+
+        clients = [genai.Client(api_key=k) for k in GEMINI_POST_API_KEYS]
+        global_posts = _generate_pool_with_client(clients[0], global_prompt)
+        network_posts = _generate_pool_with_client(clients[1 if len(clients) > 1 else 0], network_prompt)
+
+        normalized=[]
+        allowed={"geopolitical","markets","crypto","question"}
+        for item in global_posts:
+            if isinstance(item, dict) and item.get("content"):
+                category=str(item.get("category","crypto")).strip().lower()
+                slot=str(item.get("slot","any")).strip().lower()
+                if category in allowed and not (category=="geopolitical" and slot not in {"morning","midday","evening"}):
+                    normalized.append({"category":category,"network":"","slot":slot if category=="geopolitical" else "any","content":str(item["content"]).strip()})
+        aliases={"bnb":"BNB","bsc":"BNB","bnb chain":"BNB","sol":"Solana","solana":"Solana","sui":"Sui","arc":"Arc","robinhood":"Robinhood","robinhood chain":"Robinhood"}
+        for item in network_posts:
+            if isinstance(item,dict) and item.get("content") and item.get("network"):
+                raw=str(item["network"]).strip()
+                normalized.append({"category":"network","network":aliases.get(raw.lower(),raw),"slot":"any","content":str(item["content"]).strip()})
+
+        counts={c:sum(1 for x in normalized if x["category"]==c) for c in ["geopolitical","markets","crypto","question","network"]}
+        net_counts={n:sum(1 for x in normalized if x["category"]=="network" and x["network"]==n) for n in NETWORKS_FOR_POOL}
+        slots={x["slot"] for x in normalized if x["category"]=="geopolitical"}
+        if (counts["geopolitical"]<3 or counts["markets"]<3 or counts["crypto"]<4 or counts["question"]<5 or counts["network"]<15 or not {"morning","midday","evening"}.issubset(slots) or any(net_counts[n]<3 for n in NETWORKS_FOR_POOL)):
+            logging.warning(f"Incomplete central pool: counts={counts}, networks={net_counts}. Keeping old pool.")
+            return count>=30
+
+        selected=[]
+        for slot in ("morning","midday","evening"):
+            selected.append(next(x for x in normalized if x["category"]=="geopolitical" and x["slot"]==slot))
+        for cat,num in (("markets",3),("crypto",4),("question",5)):
+            selected.extend([x for x in normalized if x["category"]==cat][:num])
+        for network in NETWORKS_FOR_POOL:
+            selected.extend([x for x in normalized if x["category"]=="network" and x["network"]==network][:3])
+
+        replace_content_pool(selected)
+        CONTENT_POOL_CACHE["count"]=len(selected)
+        CONTENT_POOL_CACHE["batch_date"]=str(date.today())
+        logging.info("Central AI content pool refreshed: 30 posts (3 geo + 3 markets + 4 crypto + 5 questions + 15 network).")
+        return True
+
+
+def choose_central_post(data):
+    """Select shared content once per item/day for each group, without Gemini."""
+    import hashlib
+    from datetime import date, datetime
+
+    channel = str(data.get("channel", ""))
+    today = str(date.today())
+    state_key = f"{channel}:{today}"
+    seen = CONTENT_DELIVERY_STATE.setdefault(state_key, set())
+
+    # Keep memory bounded when the bot runs for many days.
+    for key in list(CONTENT_DELIVERY_STATE):
+        if not key.endswith(f":{today}"):
+            CONTENT_DELIVERY_STATE.pop(key, None)
+
+    eligible=[]
+    if data.get("receive_geopolitical_news", True):
+        hour=datetime.now().hour
+        slot="morning" if 6<=hour<11 else "midday" if 11<=hour<16 else "evening" if 17<=hour<23 else ""
+        if slot:
+            eligible.extend([x for x in get_content_pool_posts(category="geopolitical") if x.get("slot")==slot])
+    if data.get("receive_market_news", True):
+        eligible.extend(get_content_pool_posts(category="markets"))
+    eligible.extend(get_content_pool_posts(category="crypto"))
+    eligible.extend(get_content_pool_posts(category="question"))
+
+    network=str(data.get("network","")).strip()
+    if network:
+        eligible.extend(get_content_pool_posts(category="network",network=network))
     else:
-        enable_buy = data.get('enable_new_buy', False)
-        if enable_buy and random.random() < 0.50:
-            amount = random.randint(50, 1500)
-            template = random.choice(BUY_TEMPLATES)
-            post_text = template.format(
-                coin_name=data['coin_name'],
-                buy_link=data['buy_link'],
-                contract=data['contract'],
-                channel=data['channel'],
-                amount=amount
-            )
-        else:
-            post_text = generate_ai_post(data, include_links=True)
+        for n in NETWORKS_FOR_POOL:
+            eligible.extend(get_content_pool_posts(category="network",network=n))
 
+    if not eligible:
+        return None
+
+    unseen=[x for x in eligible if x.get("id") not in seen]
+    if not unseen:
+        # Once this group's eligible daily pool is exhausted, start a new cycle.
+        seen.clear()
+        unseen=eligible
+
+    digest=int(hashlib.md5(channel.encode()).hexdigest()[:8],16)
+    item=unseen[digest % len(unseen)]
+    seen.add(item.get("id"))
+    return item["content"]
+
+
+def generate_post(data):
+    # fallback_db.py is the separate Community Hype layer.
+    if random.random() < COMMUNITY_HYPE_PROBABILITY:
+        post_text=get_fallback_message(data)
+    else:
+        post_text=choose_central_post(data) or get_fallback_message(data)
+    post_text=post_text.replace("{coin_name}",str(data.get("coin_name","Token")))
     if data.get('selected_plan') == 'free':
         post_text += FREE_PLAN_AD_TEXT
-
     return post_text
 
 # ==========================================
@@ -391,6 +536,47 @@ def is_approved_project_link(link, data):
     return any(a and normalized.startswith(a) for a in approved)
 
 
+# ==========================================
+# FAST GROUP KEYWORD REPLIES (NO GEMINI)
+# ==========================================
+# These replies are intentionally handled locally so common questions do not
+# consume Gemini quota or wait for an API response. Matching is case-insensitive
+# and uses whole words, so a letter such as the "x" in a normal sentence does
+# not trigger the X/Twitter reply.
+
+def get_fast_keyword_reply(data, message_text):
+    """Return an instant local reply for common group keywords, or None."""
+    if not message_text:
+        return None
+
+    text = message_text.strip()
+    text_lower = text.lower()
+
+    # CA / Contract Address
+    if re.search(r"\b(?:ca|contract(?:\s+address)?)\b", text_lower, re.IGNORECASE):
+        contract = str(data.get("contract", "")).strip()
+        if contract and contract.lower() != "not set":
+            return f"📜 Contract (CA):\n{contract}"
+        return "📜 The contract address is not configured yet."
+
+    # Buy / Buy link
+    if re.search(r"\b(?:buy|buy\s+link|where\s+to\s+buy)\b", text_lower, re.IGNORECASE):
+        buy_link = str(data.get("buy_link", "")).strip()
+        if buy_link and buy_link.lower() != "not set":
+            return f"🛒 Buy here:\n{buy_link}"
+        return "🛒 The official buy link is not configured yet."
+
+    # X / Twitter. We only auto-answer if an X link is configured in the
+    # project data/environment; otherwise we avoid inventing a social link.
+    if re.search(r"\b(?:twitter|x)\b", text_lower, re.IGNORECASE):
+        x_link = str(data.get("x_link") or os.getenv("PROJECT_X_LINK", "")).strip()
+        if x_link:
+            return f"🐦 Official X / Twitter:\n{x_link}"
+        return "🐦 The official X / Twitter link is not configured yet."
+
+    return None
+
+
 async def generate_group_ai_reply(data, member_name, member_message):
     """Generate a real Gemini reply when a member directly mentions the bot.
 
@@ -405,6 +591,7 @@ Project description: {data.get('coin_desc', 'Crypto community project')}
 Official buy link: {data.get('buy_link', '')}
 Official contract address: {data.get('contract', '')}
 Official Telegram: {data.get('channel', '')}
+Network / ecosystem: {data.get('network', '')}
 
 A real member named {member_name} directly tagged you and wrote this message:
 ---
@@ -574,6 +761,14 @@ async def group_message_guard(update: Update, context: ContextTypes.DEFAULT_TYPE
         and message.reply_to_message.from_user.id == context.bot.id
     )
 
+    # 2A) Common questions are answered instantly without Gemini. This works
+    # even when the member does NOT tag/reply to the bot.
+    fast_reply = get_fast_keyword_reply(data, message_text)
+    if fast_reply:
+        await message.reply_text(fast_reply)
+        return
+
+    # 2B) Only use Gemini when the member explicitly tags/replies to the bot.
     if mentioned or replied_to_bot:
         member_name = user.first_name or user.username or "there"
         clean_message = re.sub(
@@ -686,15 +881,21 @@ async def show_edit_options(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"2️⃣ Description: {data.get('coin_desc', 'Not set')}\n"
         f"3️⃣ Contract (CA): {data.get('contract', 'Not set')}\n"
         f"4️⃣ Buy Link: {data.get('buy_link', 'Not set')}\n"
-        f"6️⃣ Posts Frequency: {posts_freq}\n"
-        f"7️⃣ Posts with Links Ratio: {data.get('link_ratio', 100)}%\n"
-        f"8️⃣ Simulated Buy Alerts: {'Enabled' if data.get('enable_new_buy') else 'Disabled'}\n\n"
+        f"5️⃣ Network: {data.get('network', 'Not set')}\n"
+        f"6️⃣ Geopolitical News: {'Yes' if data.get('receive_geopolitical_news', True) else 'No'}\n"
+        f"7️⃣ Markets/Economy News: {'Yes' if data.get('receive_market_news', True) else 'No'}\n"
+        f"8️⃣ Posts Frequency: {posts_freq}\n"
+        f"9️⃣ Posts with Links Ratio: {data.get('link_ratio', 100)}%\n"
+        f"🔟 Simulated Buy Alerts: {'Enabled' if data.get('enable_new_buy') else 'Disabled'}\n\n"
         "👇 Select an option below to update or cancel:"
     )
 
     keyboard = [
         [InlineKeyboardButton("🪙 Edit Coin Name", callback_data='opt_coin_name'), InlineKeyboardButton("📝 Edit Description", callback_data='opt_coin_desc')],
         [InlineKeyboardButton("📜 Edit Contract (CA)", callback_data='opt_contract'), InlineKeyboardButton("🛒 Edit Buy Link", callback_data='opt_buy_link')],
+        [InlineKeyboardButton("🌐 Edit Network", callback_data='opt_network')],
+        [InlineKeyboardButton("🌍 Geopolitical News", callback_data='opt_geo_news')],
+        [InlineKeyboardButton("📊 Markets/Economy News", callback_data='opt_market_news')],
         [InlineKeyboardButton("⏱️ Posts Frequency", callback_data='opt_msg_hour'), InlineKeyboardButton("📊 Posts with Links Ratio", callback_data='opt_ratio')],
         [InlineKeyboardButton("🚀 Buy Alerts Toggle", callback_data='opt_new_buy')],
         [InlineKeyboardButton("🔄 Re-configure All Settings", callback_data='opt_edit_all')],
@@ -753,12 +954,24 @@ async def edit_options_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_edit_menu')]])
         await query.edit_message_text("4️⃣ Send your new DEXScreener or Buy Link:", reply_markup=keyboard)
         return BUY_LINK
+    elif data == 'opt_network':
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_edit_menu')]])
+        await query.edit_message_text("5️⃣ Send the blockchain network / ecosystem of the token (e.g., BNB, Solana, Sui):", reply_markup=keyboard)
+        return NETWORK
+    elif data == 'opt_geo_news':
+        keyboard=[[InlineKeyboardButton("Yes 🌍",callback_data='geo_edit_yes'),InlineKeyboardButton("No 🚫",callback_data='geo_edit_no')],[InlineKeyboardButton("🔙 Back",callback_data='back_to_edit_menu')]]
+        await query.edit_message_text("Receive geopolitical news?",reply_markup=InlineKeyboardMarkup(keyboard))
+        return CONTENT_PREFS
+    elif data == 'opt_market_news':
+        keyboard=[[InlineKeyboardButton("Yes 📊",callback_data='market_edit_yes'),InlineKeyboardButton("No 🚫",callback_data='market_edit_no')],[InlineKeyboardButton("🔙 Back",callback_data='back_to_edit_menu')]]
+        await query.edit_message_text("Receive markets & economy news?",reply_markup=InlineKeyboardMarkup(keyboard))
+        return CONTENT_PREFS
     elif data == 'opt_msg_hour':
         if context.user_data.get('selected_plan') == 'free':
             await query.answer("⚠️ Free Plan is restricted to 4 posts/day maximum. Upgrade to Premium!", show_alert=True)
             return EDIT_OPTIONS_MENU
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_edit_menu')]])
-        await query.edit_message_text("6️⃣ How many posts per hour do you want? (1 to 20):", reply_markup=keyboard)
+        await query.edit_message_text("8️⃣ How many posts per hour do you want? (1 to 20):", reply_markup=keyboard)
         return MSG_PER_HOUR
     elif data == 'opt_ratio':
         keyboard = [
@@ -766,7 +979,7 @@ async def edit_options_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             [InlineKeyboardButton("75%", callback_data='ratio_75'), InlineKeyboardButton("100%", callback_data='ratio_100')],
             [InlineKeyboardButton("🔙 Back", callback_data='back_to_edit_menu')]
         ]
-        await query.edit_message_text("7️⃣ Select the percentage of posts that should include Buy Links & Contract:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text("9️⃣ Select the percentage of posts that should include Buy Links & Contract:", reply_markup=InlineKeyboardMarkup(keyboard))
         return LINK_RATIO
     elif data == 'opt_new_buy':
         keyboard = [
@@ -774,7 +987,7 @@ async def edit_options_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             [InlineKeyboardButton("No 🤖 (AI Posts Only)", callback_data='newbuy_no')],
             [InlineKeyboardButton("🔙 Back", callback_data='back_to_edit_menu')]
         ]
-        await query.edit_message_text("8️⃣ Would you like to enable Simulated New Buy Alerts?", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text("🔟 Would you like to enable Simulated New Buy Alerts?", reply_markup=InlineKeyboardMarkup(keyboard))
         return ENABLE_NEW_BUY
     elif data == 'opt_edit_all':
         context.user_data['is_editing'] = False
@@ -844,6 +1057,19 @@ async def back_to_plans_handler(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
     return await show_subscription_plans(update, context)
 
+def normalize_network_name(value):
+    value = (value or "").strip()
+    aliases = {
+        "bnb": "BNB", "bnb chain": "BNB", "binance smart chain": "BNB", "bsc": "BNB",
+        "sol": "Solana", "solana": "Solana",
+        "sui": "Sui",
+        "arc": "Arc",
+        "robinhood": "Robinhood",
+        "robinhood chain": "Robinhood",
+    }
+    return aliases.get(value.lower(), value)
+
+
 async def get_coin_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['coin_name'] = update.message.text.strip()
     if context.user_data.get('is_editing'):
@@ -877,9 +1103,59 @@ async def get_buy_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('is_editing'):
         return await show_edit_options(update, context)
 
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_buy_link')]])
+    keyboard=[[InlineKeyboardButton("Yes 🌍",callback_data='geo_yes'),InlineKeyboardButton("No 🚫",callback_data='geo_no')],[InlineKeyboardButton("🔙 Back",callback_data='back_to_buy_link')]]
+    await update.message.reply_text("🌍 Would you like to receive geopolitical news that may affect markets in this group?",reply_markup=InlineKeyboardMarkup(keyboard))
+    return CONTENT_PREFS
+
+async def get_content_preferences(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query=update.callback_query
+    await query.answer()
+    d=query.data
+    if d in ('geo_yes','geo_edit_yes'):
+        context.user_data['receive_geopolitical_news']=True
+    elif d in ('geo_no','geo_edit_no'):
+        context.user_data['receive_geopolitical_news']=False
+    elif d in ('market_yes','market_edit_yes'):
+        context.user_data['receive_market_news']=True
+    elif d in ('market_no','market_edit_no'):
+        context.user_data['receive_market_news']=False
+    elif d=='back_to_edit_menu':
+        return await show_edit_options(update, context)
+    elif d=='back_to_buy_link':
+        keyboard=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",callback_data='back_to_content_prefs')]])
+        await query.edit_message_text("4️⃣ Send your DEXScreener or Buy Link:",reply_markup=keyboard)
+        return BUY_LINK
+    elif d=='back_to_content_prefs':
+        keyboard=[[InlineKeyboardButton("Yes 🌍",callback_data='geo_yes'),InlineKeyboardButton("No 🚫",callback_data='geo_no')],[InlineKeyboardButton("🔙 Back",callback_data='back_to_buy_link')]]
+        await query.edit_message_text("🌍 Would you like to receive geopolitical news that may affect markets in this group?",reply_markup=InlineKeyboardMarkup(keyboard))
+        return CONTENT_PREFS
+    elif d=='back_to_market_pref':
+        keyboard=[[InlineKeyboardButton("Yes 📊",callback_data='market_yes'),InlineKeyboardButton("No 🚫",callback_data='market_no')],[InlineKeyboardButton("🔙 Back",callback_data='back_to_content_prefs')]]
+        await query.edit_message_text("📊 Would you like to receive markets & economy news?",reply_markup=InlineKeyboardMarkup(keyboard))
+        return CONTENT_PREFS
+    else:
+        return CONTENT_PREFS
+    if d in ('geo_edit_yes','geo_edit_no','market_edit_yes','market_edit_no'):
+        return await finish_setup(update, context)
+    if d in ('geo_yes','geo_no'):
+        keyboard=[[InlineKeyboardButton("Yes 📊",callback_data='market_yes'),InlineKeyboardButton("No 🚫",callback_data='market_no')],[InlineKeyboardButton("🔙 Back",callback_data='back_to_content_prefs')]]
+        await query.edit_message_text("📊 Would you like to receive markets & economy news in this group?\n\nExamples: interest rates, inflation, jobs and major economic data.",reply_markup=InlineKeyboardMarkup(keyboard))
+        return CONTENT_PREFS
+    keyboard=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back",callback_data='back_to_market_pref')]])
+    await query.edit_message_text("🌐 Blockchain network / ecosystem (optional).\n\nSend a supported network, another network, or type SKIP. Not specifying a network will NOT block registration.",reply_markup=keyboard)
+    return NETWORK
+
+
+async def get_network(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    raw_network=update.message.text.strip()
+    context.user_data['network'] = '' if raw_network.lower() in {'skip','none','no','-','n/a','na'} else normalize_network_name(raw_network)
+
+    if context.user_data.get('is_editing'):
+        return await show_edit_options(update, context)
+
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_network_input')]])
     await update.message.reply_text(
-        "5️⃣ Send your Channel Username (e.g., @mychannel) or Channel Link (e.g., https://t.me/mychannel):",
+        "7️⃣ Send your Channel Username (e.g., @mychannel) or Channel Link (e.g., https://t.me/mychannel):",
         reply_markup=keyboard
     )
     return CHANNEL
@@ -919,7 +1195,7 @@ async def verify_admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     if query.data == 'back_to_channel_input':
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_buy_link')]])
-        await query.edit_message_text("5️⃣ Send your Channel Username or Link (e.g., @mychannel):", reply_markup=keyboard)
+        await query.edit_message_text("7️⃣ Send your Channel Username or Link (e.g., @mychannel):", reply_markup=keyboard)
         return CHANNEL
 
     await query.answer()
@@ -940,14 +1216,14 @@ async def verify_admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE
                     [InlineKeyboardButton("🔙 Back", callback_data='back_to_verify_admin')]
                 ]
                 await query.edit_message_text(
-                    "✅ Admin Status Verified!\n\n7️⃣ What percentage of posts should contain Buy Links & Contract?",
+                    "✅ Admin Status Verified!\n\n9️⃣ What percentage of posts should contain Buy Links & Contract?",
                     reply_markup=InlineKeyboardMarkup(keyboard)
                 )
                 return LINK_RATIO
 
             keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_to_verify_admin')]])
             await query.edit_message_text(
-                "✅ Admin Status Verified!\n\n6️⃣ How many posts per hour do you want? (1 to 20):",
+                "✅ Admin Status Verified!\n\n8️⃣ How many posts per hour do you want? (1 to 20):",
                 reply_markup=keyboard
             )
             return MSG_PER_HOUR
@@ -976,7 +1252,7 @@ async def get_msg_per_hour(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("75%", callback_data='ratio_75'), InlineKeyboardButton("100%", callback_data='ratio_100')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("7️⃣ What percentage of posts should contain Buy Links & Contract?", reply_markup=reply_markup)
+    await update.message.reply_text("9️⃣ What percentage of posts should contain Buy Links & Contract?", reply_markup=reply_markup)
     return LINK_RATIO
 
 async def get_link_ratio(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1013,7 +1289,7 @@ async def get_link_ratio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🔙 Back", callback_data='back_to_link_ratio')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text("8️⃣ Would you like to enable Simulated New Buy Alerts?", reply_markup=reply_markup)
+    await query.edit_message_text("🔟 Would you like to enable Simulated New Buy Alerts?", reply_markup=reply_markup)
     return ENABLE_NEW_BUY
 
 async def get_enable_new_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1025,7 +1301,7 @@ async def get_enable_new_buy(update: Update, context: ContextTypes.DEFAULT_TYPE)
             [InlineKeyboardButton("0%", callback_data='ratio_0'), InlineKeyboardButton("25%", callback_data='ratio_25'), InlineKeyboardButton("50%", callback_data='ratio_50')],
             [InlineKeyboardButton("75%", callback_data='ratio_75'), InlineKeyboardButton("100%", callback_data='ratio_100')]
         ]
-        await query.edit_message_text("7️⃣ What percentage of posts should contain Buy Links & Contract?", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text("9️⃣ What percentage of posts should contain Buy Links & Contract?", reply_markup=InlineKeyboardMarkup(keyboard))
         return LINK_RATIO
 
     enable_buy = (query.data == 'newbuy_yes')
@@ -1082,6 +1358,7 @@ async def background_publisher(application, user_data):
             if not current_data or current_data.get('subscription_status') == 'cancelled':
                 break
                 
+            await ensure_daily_content_pool()
             post_text = generate_post(current_data)
             
             if current_data.get('selected_plan') == 'free':
@@ -1122,8 +1399,9 @@ def restart_all_active_tasks(application):
             ACTIVE_PUBLISH_TASKS[channel] = task
 
 async def post_init(application):
+    await ensure_daily_content_pool()
     restart_all_active_tasks(application)
-    logging.info("Bot initialized and background publishers started.")
+    logging.info("Bot initialized, central content pool checked, and background publishers started.")
 
 # ==========================================
 # MAIN FUNCTION & BOT STARTUP
@@ -1170,10 +1448,18 @@ if __name__ == '__main__':
                 CallbackQueryHandler(back_to_edit_menu_handler, pattern='^back_to_edit_menu$'),
                 CallbackQueryHandler(get_contract, pattern='^back_to_buy_link$')
             ],
+            CONTENT_PREFS: [
+                CallbackQueryHandler(get_content_preferences, pattern='^(geo_|market_|back_to_content_prefs|back_to_market_pref|back_to_edit_menu|back_to_buy_link)')
+            ],
+            NETWORK: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_network),
+                CallbackQueryHandler(back_to_edit_menu_handler, pattern='^back_to_edit_menu$'),
+                CallbackQueryHandler(get_content_preferences, pattern='^back_to_market_pref$')
+            ],
             CHANNEL: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, get_channel),
                 CallbackQueryHandler(back_to_edit_menu_handler, pattern='^back_to_edit_menu$'),
-                CallbackQueryHandler(get_buy_link, pattern='^back_to_channel_input$')
+                CallbackQueryHandler(get_network, pattern='^back_to_channel_input$')
             ],
             VERIFY_ADMIN: [
                 CallbackQueryHandler(verify_admin_status, pattern='^(verify_admin|back_to_channel_input)$')
