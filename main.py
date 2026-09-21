@@ -146,35 +146,55 @@ async def _delete_flow_message(context, chat_id, message_id):
         pass
 
 async def send_flow_reply(update, context, text, reply_markup=None, **kwargs):
-    """Maintain one private setup screen instead of opening a new screen each step."""
+    """Open the new setup screen first, then remove the previous one."""
     chat = update.effective_chat
     if not chat:
         return None
 
     old_id = context.user_data.get(FLOW_CURRENT_MESSAGE_KEY)
-    if old_id:
+
+    # IMPORTANT: send the new screen FIRST. This avoids a visible blank/frozen
+    # moment while the old screen is being removed.
+    message = await context.bot.send_message(chat_id=chat.id, text=text, reply_markup=reply_markup, **kwargs)
+    context.user_data[FLOW_CURRENT_MESSAGE_KEY] = message.message_id
+    track_flow_message(context, message.message_id)
+
+    # Now clean the previous bot screen.
+    if old_id and old_id != message.message_id:
         await _delete_flow_message(context, chat.id, old_id)
 
-    # Remove the user's previous text input when Telegram allows it. This keeps
-    # the private setup chat visually clean and leaves one active bot screen.
+    # Remove the user's previous text input when Telegram allows it.
     if update.message and update.message.from_user and update.message.chat.type == "private":
         try:
             await update.message.delete()
         except Exception:
             pass
 
-    message = await context.bot.send_message(chat_id=chat.id, text=text, reply_markup=reply_markup, **kwargs)
-    context.user_data[FLOW_CURRENT_MESSAGE_KEY] = message.message_id
-    track_flow_message(context, message.message_id)
     return message
 
 async def edit_flow_message(query, context, text, reply_markup=None, **kwargs):
-    """Edit the current setup screen; never create a second screen."""
+    """Open the next setup screen first, then remove the previous screen."""
     if not query or not query.message:
         return None
-    context.user_data[FLOW_CURRENT_MESSAGE_KEY] = query.message.message_id
-    track_flow_message(context, query.message.message_id)
-    return await query.edit_message_text(text, reply_markup=reply_markup, **kwargs)
+
+    chat_id = query.message.chat_id
+    old_id = query.message.message_id
+
+    # IMPORTANT: create the next screen FIRST, then delete the old callback
+    # message. This gives the navigation the requested smooth transition.
+    message = await context.bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        reply_markup=reply_markup,
+        **kwargs
+    )
+    context.user_data[FLOW_CURRENT_MESSAGE_KEY] = message.message_id
+    track_flow_message(context, message.message_id)
+
+    if old_id != message.message_id:
+        await _delete_flow_message(context, chat_id, old_id)
+
+    return message
 
 async def cleanup_private_flow(update, context):
     chat = update.effective_chat
@@ -1649,7 +1669,7 @@ async def get_enable_new_buy(update: Update, context: ContextTypes.DEFAULT_TYPE)
     username = query.from_user.username or "Unknown"
 
     save_user_data(user_id, username, context.user_data)
-    restart_all_active_tasks(context.application)
+    await restart_all_active_tasks(context.application)
 
     channel = context.user_data.get('channel')
     plan = context.user_data.get('selected_plan', 'free')
@@ -1679,7 +1699,7 @@ async def finish_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = query.from_user.username or "Unknown"
     
     save_user_data(user_id, username, context.user_data)
-    restart_all_active_tasks(context.application)
+    await restart_all_active_tasks(context.application)
     
     await edit_flow_message(query, context, "✅ Settings updated and saved successfully! 🚀", reply_markup=InlineKeyboardMarkup([
         [InlineKeyboardButton("🏠 Main Menu", callback_data='back_to_main')]
@@ -1723,13 +1743,18 @@ async def background_publisher(application, user_data):
             logging.error(f"Publishing error for {channel}: {e}")
             await asyncio.sleep(60)
 
-def restart_all_active_tasks(application):
+async def restart_all_active_tasks(application):
+    """Restart publishers without blocking Telegram's event loop on PostgreSQL."""
     global ACTIVE_PUBLISH_TASKS
+
     for task in ACTIVE_PUBLISH_TASKS.values():
         task.cancel()
     ACTIVE_PUBLISH_TASKS.clear()
-    
-    active_users = get_active_users()
+
+    # Supabase/PostgreSQL can take seconds or minutes when the connection is
+    # slow. Never execute this synchronous DB call directly in the event loop.
+    active_users = await asyncio.to_thread(get_active_users)
+
     for u_data in active_users:
         channel = u_data['channel']
         if channel not in ACTIVE_PUBLISH_TASKS:
@@ -1737,10 +1762,9 @@ def restart_all_active_tasks(application):
             ACTIVE_PUBLISH_TASKS[channel] = task
 
 async def post_init(application):
-    # Do NOT wait for Gemini during startup. A remote API/quota timeout here
-    # previously made /start appear frozen. Startup must become responsive
-    # immediately; content generation runs in the background.
-    restart_all_active_tasks(application)
+    # Startup must NEVER wait for PostgreSQL or Gemini. Both jobs run in the
+    # background so /start and callback buttons remain responsive immediately.
+    application.create_task(restart_all_active_tasks(application))
     application.create_task(ensure_daily_content_pool())
     logging.info("Bot initialized; publishers/content pool are running in the background.")
 
