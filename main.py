@@ -391,8 +391,27 @@ Keep each post concise (2-5 short lines).
             return False
 
         global_posts = _generate_pool_with_client(genai.Client(api_key=post_keys[0]), global_prompt)
+
+        # If the first central-generation call is exhausted/unavailable, do not
+        # immediately fire another request. This prevents a second quota hit
+        # during the same startup and lets the local fallback layer take over.
+        if not global_posts:
+            CONTENT_POOL_GENERATION_FAILED_TODAY = True
+            logging.warning(
+                "Central global content batch could not be generated; "
+                "skipping the network batch and using local fallback today."
+            )
+            return False
+
         network_key = post_keys[1] if len(post_keys) > 1 else post_keys[0]
         network_posts = _generate_pool_with_client(genai.Client(api_key=network_key), network_prompt)
+        if not network_posts:
+            CONTENT_POOL_GENERATION_FAILED_TODAY = True
+            logging.warning(
+                "Central network content batch could not be generated; "
+                "using local fallback today."
+            )
+            return False
 
         normalized = []
         allowed = {"geopolitical", "markets", "crypto", "question"}
