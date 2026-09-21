@@ -1209,118 +1209,90 @@ async def onboarding_continue(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.answer()
     return await show_public_main_menu(update, context)
 
-async def _resolve_start_state_after_render(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, first_message_id: int):
-    """Resolve PostgreSQL state AFTER /start has already rendered a screen.
-
-    This function is deliberately detached from the Telegram update path. A slow
-    Supabase/PostgreSQL connection must never make the user wait after pressing
-    /start.
-    """
-    try:
-        state = await asyncio.to_thread(get_user_start_state, user_id)
-        START_STATE_CACHE[user_id] = state
-
-        # Do not overwrite a screen the user has already interacted with.
-        current_id = context.user_data.get(FLOW_CURRENT_MESSAGE_KEY)
-        if current_id != first_message_id:
-            return
-
-        channels = state.get("channels", [])
-        onboarding_seen = state.get("onboarding_seen", False)
-        saved_language = state.get("language") or "en"
-        context.user_data["language"] = saved_language
-
-        if channels:
-            return  # The instant welcome-back screen is already correct.
-
-        if not onboarding_seen:
-            await show_language_selection(update, context)
-        else:
-            await show_subscription_plans(update, context)
-    except Exception:
-        logging.exception("Background /start state resolution failed")
-
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-
-    # ---------------------------------------------------------------
-    # CRITICAL PERFORMANCE RULE:
-    # Render the entrance FIRST. Never wait for PostgreSQL, Gemini, task
-    # startup, content-pool generation, or any other remote operation here.
-    # ---------------------------------------------------------------
-    cached = START_STATE_CACHE.get(user_id)
-    if cached:
-        channels = cached.get("channels", [])
-        onboarding_seen = cached.get("onboarding_seen", False)
-        saved_language = cached.get("language") or "en"
-        context.user_data["language"] = saved_language
-
-        if not channels and not onboarding_seen:
-            return await show_language_selection(update, context)
-        if not channels:
-            return await show_subscription_plans(update, context)
-
-    # Existing-user entrance is intentionally immediate and polished. The
-    # database decides in the background whether this should become onboarding.
-    keyboard = [
-        [InlineKeyboardButton("➕ Buy / Setup for Another Channel", callback_data='menu_buy_new')],
-        [InlineKeyboardButton("⚙️ Edit Settings for Existing Channel", callback_data='menu_edit_existing')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    """Ultra-fast premium entrance. No DB, Gemini or remote work is awaited."""
     msg = (
-        "👑 DJANGO AI — WELCOME BACK\n\n"
-        "🤖 Your AI community command center is ready.\n\n"
-        "Your campaigns, automation and intelligent community tools are waiting.\n"
-        "What would you like to do today?"
+        "👑 DJANGO AI\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "🤖 THE AI COMMAND CENTER FOR CRYPTO COMMUNITIES\n\n"
+        "Turn your Telegram community into an intelligent, active ecosystem — "
+        "even when you are away.\n\n"
+        "⚡ AI-powered hype & content\n"
+        "🧠 Intelligent replies to your community\n"
+        "📊 Community engagement & behavior insights\n"
+        "🚀 Automated promotion and activation\n"
+        "🛠️ Advanced tools built for crypto projects\n\n"
+        "DJANGO AI is evolving into a complete AI community operator. "
+        "More powerful tools and affordable AI agents are on the way.\n\n"
+        "Your project. Your community. Your AI operator."
     )
 
-    if update.message:
-        screen = await send_flow_reply(update, context, msg, reply_markup=reply_markup)
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚡ ENTER DJANGO AI", callback_data="enter_dashboard")],
+        [
+            InlineKeyboardButton("📢 Telegram", url="https://t.me/django_ai_official"),
+            InlineKeyboardButton("𝕏 X / Twitter", url="https://x.com/django_ai_official"),
+        ],
+        [InlineKeyboardButton("🌐 Official Website", url="https://django-ai.example.com")],
+    ])
+
+    if update.callback_query:
+        await edit_flow_message(update.callback_query, context, msg, reply_markup=keyboard)
     else:
-        # Callback entry: replace the current screen using the existing smooth
-        # transition behavior.
-        screen = await edit_flow_message(update.callback_query, context, msg, reply_markup=reply_markup)
-
-    if screen:
-        context.user_data["start_loading_message_id"] = screen.message_id
-        # Resolve remote state only after the user already sees the entrance.
-        context.application.create_task(
-            _resolve_start_state_after_render(update, context, user_id, screen.message_id)
-        )
-
+        await send_flow_reply(update, context, msg, reply_markup=keyboard)
     return MAIN_MENU
 
-async def show_subscription_plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Clear setup fields, but preserve the active screen so the new screen can
-    # replace/delete the previous one cleanly.
-    _flow_current = context.user_data.get(FLOW_CURRENT_MESSAGE_KEY)
-    _flow_ids_saved = context.user_data.get(FLOW_MESSAGE_IDS_KEY)
-    _language_saved = context.user_data.get("language", "en")
-    context.user_data.clear()
-    if _flow_current:
-        context.user_data[FLOW_CURRENT_MESSAGE_KEY] = _flow_current
-    if _flow_ids_saved is not None:
-        context.user_data[FLOW_MESSAGE_IDS_KEY] = _flow_ids_saved
-    context.user_data["language"] = _language_saved
-    welcome_msg = (
-        "🤖 Welcome to DJANGO Crypto Auto-Promoter Bot!\n\n"
-        "Boost your crypto channel & group engagement with AI-generated hype posts, "
-        "simulated whale buys, and custom promotional schedules.\n\n"
-        "💰 Select a Plan to Activate:"
+
+async def enter_dashboard_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Enter the dashboard without touching PostgreSQL or Gemini."""
+    query = update.callback_query
+    await query.answer()
+    return await show_public_main_menu(update, context)
+
+
+async def show_faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """FAQ is deliberately local: no Gemini call, no API delay, no quota use."""
+    text = (
+        "❓ DJANGO AI — FAQ\n\n"
+        "Choose a question. Every answer is generated locally for an instant response."
     )
-    keyboard = [
-        [InlineKeyboardButton("🎁 Free Plan (4 Posts/Day)", callback_data='plan_free')],
-        [InlineKeyboardButton("💎 1 Month ($10 TON)", callback_data='plan_1_month')],
-        [InlineKeyboardButton("💎 6 Months ($50 TON)", callback_data='plan_6_months')],
-        [InlineKeyboardButton("💎 12 Months ($80 TON)", callback_data='plan_12_months')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🤖 What does DJANGO AI do?", callback_data="faq_what")],
+        [InlineKeyboardButton("⚡ How does publishing work?", callback_data="faq_publish")],
+        [InlineKeyboardButton("🧠 Does it use AI for members?", callback_data="faq_ai")],
+        [InlineKeyboardButton("💳 What plans are available?", callback_data="faq_plans")],
+        [InlineKeyboardButton("🔐 Is my project data protected?", callback_data="faq_data")],
+        [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="back_to_main")],
+    ])
     if update.callback_query:
-        await edit_flow_message(update.callback_query, context, welcome_msg, reply_markup=reply_markup)
+        await edit_flow_message(update.callback_query, context, text, reply_markup=keyboard)
     else:
-        await send_flow_reply(update, context, welcome_msg, reply_markup=reply_markup)
-    return PLAN_SELECT
+        await send_flow_reply(update, context, text, reply_markup=keyboard)
+    return MAIN_MENU
+
+FAQ_ANSWERS = {
+    "faq_what": "🤖 DJANGO AI automates crypto community promotion, publishing, engagement, moderation and member assistance around your project.",
+    "faq_publish": "⚡ Content is selected from the central content engine and published according to your campaign settings. Common project information is handled locally without AI calls.",
+    "faq_ai": "🧠 Yes. When a member directly mentions or replies to the bot, DJANGO can use Gemini to generate a contextual answer. Common questions such as CA, Buy Link and X/Twitter are answered instantly without AI.",
+    "faq_plans": "💳 DJANGO currently offers a Free plan plus paid 1-month, 6-month and 12-month plans. Open Launch AI Promoter to see the current plan details.",
+    "faq_data": "🔐 DJANGO uses the project settings you provide to operate your campaign. Avoid sending passwords, private keys, seed phrases or other sensitive credentials.",
+}
+
+async def faq_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "back_to_main":
+        return await start(update, context)
+    answer = FAQ_ANSWERS.get(query.data)
+    if not answer:
+        return await show_faq(update, context)
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 Back to FAQ", callback_data="menu_faq")],
+        [InlineKeyboardButton("🏠 Main Menu", callback_data="back_to_main")],
+    ])
+    await edit_flow_message(query, context, answer, reply_markup=keyboard)
+    return MAIN_MENU
+
 
 async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1328,6 +1300,8 @@ async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == 'menu_buy_new':
         return await show_subscription_plans(update, context)
+    elif query.data == 'menu_faq':
+        return await show_faq(update, context)
     elif query.data == 'menu_edit_existing':
         user_id = query.from_user.id
         channels = await asyncio.to_thread(get_user_channels, user_id)
@@ -1337,8 +1311,18 @@ async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             clean_ch = ch.replace('@', '')
             keyboard.append([InlineKeyboardButton(f"📢 {ch} ({coin})", callback_data=f"edit_ch_{clean_ch}")])
         
+        if not keyboard:
+            await edit_flow_message(
+                query, context,
+                "ℹ️ No active campaign was found for your account.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🚀 Launch AI Promoter", callback_data="menu_launch")],
+                    [InlineKeyboardButton("🏠 Main Menu", callback_data="back_to_main")],
+                ])
+            )
+            return MAIN_MENU
+
         keyboard.append([InlineKeyboardButton("🔙 Back", callback_data='back_to_main')])
-        
         reply_markup = InlineKeyboardMarkup(keyboard)
         await edit_flow_message(query, context, "⚙️ Select the channel you want to edit:", reply_markup=reply_markup)
         return EDIT_SELECT_CHANNEL
@@ -1505,7 +1489,16 @@ async def confirm_cancel_sub_handler(update: Update, context: ContextTypes.DEFAU
             ACTIVE_PUBLISH_TASKS[channel].cancel()
             del ACTIVE_PUBLISH_TASKS[channel]
 
-        await edit_flow_message(query, context, f"🛑 Subscription Cancelled! Auto-publishing for channel {channel} has been stopped.")
+        await edit_flow_message(
+            query, context,
+            f"🛑 Subscription Cancelled! Auto-publishing for channel {channel} has been stopped.\n\n"
+            "Your campaign is no longer publishing.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🚀 Launch AI Promoter", callback_data="menu_launch")],
+                [InlineKeyboardButton("❓ FAQ", callback_data="menu_faq")],
+                [InlineKeyboardButton("🏠 Main Menu", callback_data="back_to_main")],
+            ])
+        )
         return ConversationHandler.END
 
 async def plan_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2038,24 +2031,22 @@ if __name__ == '__main__':
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler('start', start),
-            CallbackQueryHandler(start, pattern='^back_to_main$'),
+            CallbackQueryHandler(enter_dashboard_handler, pattern='^back_to_main$'),
+            CallbackQueryHandler(enter_dashboard_handler, pattern='^enter_dashboard$'),
             CallbackQueryHandler(main_menu_handler, pattern='^menu_edit_existing$'),
-            CallbackQueryHandler(onboarding_language_selected, pattern='^lang_'),
-            CallbackQueryHandler(onboarding_continue, pattern='^onboarding_continue$'),
+            CallbackQueryHandler(faq_handler, pattern='^faq_'),
+            CallbackQueryHandler(show_faq, pattern='^menu_faq$'),
             CallbackQueryHandler(public_menu_handler, pattern='^(menu_launch|menu_language)$'),
             CallbackQueryHandler(plan_selected, pattern='^plan_'),
         ],
         states={
-            LANGUAGE_SELECT: [
-                CallbackQueryHandler(onboarding_language_selected, pattern='^lang_(en|zh|ru|es|ar|fr|pt|tr|de|hi|ko|ja)$')
-            ],
-            ONBOARDING_INTRO: [
-                CallbackQueryHandler(onboarding_continue, pattern='^onboarding_continue$')
-            ],
             MAIN_MENU: [
+                CallbackQueryHandler(faq_handler, pattern='^faq_'),
+                CallbackQueryHandler(show_faq, pattern='^menu_faq$'),
                 CallbackQueryHandler(public_menu_handler, pattern='^(menu_launch|menu_language)$'),
                 CallbackQueryHandler(main_menu_handler, pattern='^(menu_buy_new|menu_edit_existing)$'),
-                CallbackQueryHandler(start, pattern='^back_to_main$')
+                CallbackQueryHandler(enter_dashboard_handler, pattern='^back_to_main$'),
+                CallbackQueryHandler(enter_dashboard_handler, pattern='^enter_dashboard$')
             ],
             PLAN_SELECT: [
                 CallbackQueryHandler(plan_selected, pattern='^plan_'),
