@@ -369,6 +369,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "What would you like to do today?"
         )
         if update.message:
+            await update.message.reply_text(msg, reply_markup=PERSISTENT_REPLY_KEYBOARD)
             await update.message.reply_text(msg, reply_markup=reply_markup)
         else:
             await update.callback_query.edit_message_text(msg, reply_markup=reply_markup)
@@ -563,7 +564,8 @@ async def confirm_cancel_sub_handler(update: Update, context: ContextTypes.DEFAU
             ACTIVE_PUBLISH_TASKS[channel].cancel()
             del ACTIVE_PUBLISH_TASKS[channel]
 
-        await query.edit_message_text(f"🛑 Subscription Cancelled! Auto-publishing for channel {channel} has been stopped.", reply_markup=PERSISTENT_REPLY_KEYBOARD)
+        await query.edit_message_text(f"🛑 Subscription Cancelled! Auto-publishing for channel {channel} has been stopped.")
+        await query.message.reply_text("Send /start to begin again.", reply_markup=PERSISTENT_REPLY_KEYBOARD)
         return ConversationHandler.END
 
 async def plan_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -925,7 +927,6 @@ async def finish_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username or ""
     data = context.user_data
     
-    # التأكد من حفظ user_id ضمن القاموس لتجنب أخطاء المهام في الخلفية
     data['user_id'] = user_id
 
     save_user_data(user_id, username, data)
@@ -954,8 +955,10 @@ async def finish_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if update.callback_query:
         await update.callback_query.edit_message_text(success_msg, reply_markup=keyboard)
+        await update.callback_query.message.reply_text("👇 You can manage your bot using the keyboard below:", reply_markup=PERSISTENT_REPLY_KEYBOARD)
     else:
         await update.message.reply_text(success_msg, reply_markup=keyboard)
+        await update.message.reply_text("👇 You can manage your bot using the keyboard below:", reply_markup=PERSISTENT_REPLY_KEYBOARD)
 
     context.user_data.clear()
     return ConversationHandler.END
