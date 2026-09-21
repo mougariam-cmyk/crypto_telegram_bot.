@@ -25,28 +25,58 @@ from database import (
 )
 
 # ==========================================
-# MULTI-GEMINI API KEYS ROTATION SYSTEM
+# SEPARATED GEMINI API KEYS
 # ==========================================
-GEMINI_API_KEYS = [
-    os.getenv("GEMINI_API_KEY_1", ""),
-    os.getenv("GEMINI_API_KEY_2", ""),
-    os.getenv("GEMINI_API_KEY_3", ""),
-    os.getenv("GEMINI_API_KEY_4", "")
+# KEY 1 is reserved exclusively for AI post generation.
+# KEYS 2-4 are reserved for group AI replies/moderation.
+# IMPORTANT: for real quota separation, keys 2-4 should belong to
+# different Google AI/API projects. Multiple keys from one project
+# normally share that project's quota.
+GEMINI_POSTS_API_KEY = os.getenv("GEMINI_API_KEY_1", "").strip()
+
+GEMINI_GROUP_API_KEYS = [
+    os.getenv("GEMINI_API_KEY_2", "").strip(),
+    os.getenv("GEMINI_API_KEY_3", "").strip(),
+    os.getenv("GEMINI_API_KEY_4", "").strip(),
 ]
-GEMINI_API_KEYS = [k for k in GEMINI_API_KEYS if k]
+GEMINI_GROUP_API_KEYS = [k for k in GEMINI_GROUP_API_KEYS if k]
 
-if not GEMINI_API_KEYS and os.getenv("GEMINI_API_KEY"):
-    GEMINI_API_KEYS = [os.getenv("GEMINI_API_KEY")]
+# Backward-compatible fallback if only the old single key is configured.
+if not GEMINI_POSTS_API_KEY and not GEMINI_GROUP_API_KEYS:
+    legacy_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if legacy_key:
+        GEMINI_POSTS_API_KEY = legacy_key
+        GEMINI_GROUP_API_KEYS = [legacy_key]
 
-api_key_index = 0
+_group_api_key_index = 0
 
-def get_next_gemini_client():
-    global api_key_index
-    if not GEMINI_API_KEYS:
+def get_posts_gemini_client():
+    """Return the client reserved ONLY for AI post generation."""
+    if not GEMINI_POSTS_API_KEY:
         return None
-    key = GEMINI_API_KEYS[api_key_index % len(GEMINI_API_KEYS)]
-    api_key_index += 1
+    return genai.Client(api_key=GEMINI_POSTS_API_KEY)
+
+def get_next_group_gemini_client():
+    """Rotate only through keys 2-4, reserved for group AI."""
+    global _group_api_key_index
+    if not GEMINI_GROUP_API_KEYS:
+        return None
+    key = GEMINI_GROUP_API_KEYS[_group_api_key_index % len(GEMINI_GROUP_API_KEYS)]
+    _group_api_key_index += 1
     return genai.Client(api_key=key)
+
+def get_group_gemini_clients_in_rotation():
+    """Return each configured group key once, starting at the current rotation point."""
+    global _group_api_key_index
+    if not GEMINI_GROUP_API_KEYS:
+        return []
+    start = _group_api_key_index % len(GEMINI_GROUP_API_KEYS)
+    clients = []
+    for offset in range(len(GEMINI_GROUP_API_KEYS)):
+        idx = (start + offset) % len(GEMINI_GROUP_API_KEYS)
+        clients.append(genai.Client(api_key=GEMINI_GROUP_API_KEYS[idx]))
+    _group_api_key_index = (start + 1) % len(GEMINI_GROUP_API_KEYS)
+    return clients
 
 # Enable Logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -128,8 +158,9 @@ def parse_channel_input(user_input: str) -> str:
 
 def generate_ai_post(data, include_links=True):
     try:
-        client = get_next_gemini_client()
+        client = get_posts_gemini_client()
         if not client:
+            logging.warning("No GEMINI_API_KEY_1 configured for AI posts; using fallback_db.py")
             return get_fallback_message(data)
 
         channel_key = data.get('channel', 'default')
@@ -241,7 +272,11 @@ Previous posts to avoid repeating:
             return get_fallback_message(data)
 
     except Exception as e:
-        logging.error(f"Gemini API Error with rotation: {e}")
+        # KEY 1 is deliberately the ONLY key used for AI posts.
+        # Never rotate into keys 2-4 here. If its quota is exhausted,
+        # immediately use fallback_db.py.
+        logging.error(f"Gemini AI post generation failed (KEY 1 only): {e}")
+        logging.info("Falling back to fallback_db.py for this post")
         return get_fallback_message(data)
 
 
@@ -397,19 +432,15 @@ Important:
 - Output ONLY the reply text.
 """
 
-    attempts = max(1, len(GEMINI_API_KEYS))
     last_error = None
+    clients = get_group_gemini_clients_in_rotation()
 
-    for attempt in range(attempts):
+    logging.info(
+        f"Generating AI group reply for @{member_name}: {member_message[:120]}"
+    )
+
+    for attempt, client in enumerate(clients, start=1):
         try:
-            client = get_next_gemini_client()
-            if not client:
-                break
-
-            logging.info(
-                f"Generating AI group reply for @{member_name}: {member_message[:120]}"
-            )
-
             response = client.models.generate_content(
                 model="gemini-3.6-flash",
                 contents=prompt,
@@ -421,16 +452,16 @@ Important:
                 return reply
 
             last_error = "Gemini returned an empty response"
-            logging.warning(last_error)
+            logging.warning(f"Gemini group reply attempt {attempt}/{len(clients)} returned an empty response")
 
         except Exception as e:
             last_error = e
             logging.error(
-                f"Gemini group reply attempt {attempt + 1}/{attempts} failed: {e}"
+                f"Gemini group reply attempt {attempt}/{len(clients)} failed: {e}"
             )
 
     if last_error:
-        logging.error(f"All Gemini group reply attempts failed: {last_error}")
+        logging.error(f"All group Gemini keys failed: {last_error}")
 
     # Only use this when Gemini is genuinely unavailable.
     return f"Hey {member_name}! 👋 I'm here. Ask me anything about {data.get('coin_name', 'the project')}."
@@ -464,12 +495,7 @@ async def is_other_coin_mentioned(data, message_text):
             if ticker.lower() != own_clean:
                 return True
 
-    try:
-        client = get_next_gemini_client()
-        if not client:
-            return False
-
-        prompt = f"""
+    prompt = f"""
 Classify this Telegram group message for moderation.
 
 Official project token: {data.get('coin_name', '')}
@@ -482,15 +508,22 @@ other than the official project.
 SAFE if it is not about another cryptocurrency/token.
 Do not classify a general crypto word like 'coin' by itself as OTHER_COIN.
 """
-        response = client.models.generate_content(
-            model="gemini-3.6-flash",
-            contents=prompt,
-        )
-        result = (response.text or "").strip().upper() if response else ""
-        return result.startswith("OTHER_COIN")
-    except Exception as e:
-        logging.error(f"Gemini moderation error: {e}")
-        return False
+
+    # Moderation also belongs to the group-AI pool (keys 2-4), never key 1.
+    for attempt, client in enumerate(get_group_gemini_clients_in_rotation(), start=1):
+        try:
+            response = client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=prompt,
+            )
+            result = (response.text or "").strip().upper() if response else ""
+            return result.startswith("OTHER_COIN")
+        except Exception as e:
+            logging.error(
+                f"Gemini moderation attempt {attempt} failed: {e}"
+            )
+
+    return False
 
 
 async def group_message_guard(update: Update, context: ContextTypes.DEFAULT_TYPE):
