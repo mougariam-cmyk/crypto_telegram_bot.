@@ -24,7 +24,9 @@ from database import (
     get_active_users,
     replace_content_pool,
     get_content_pool_stats,
-    get_content_pool_posts
+    get_content_pool_posts,
+    get_user_start_state,
+    save_onboarding_profile
 )
 
 # ==========================================
@@ -111,8 +113,9 @@ threading.Thread(target=run_health_check_server, daemon=True).start()
 (
     MAIN_MENU, PLAN_SELECT, COIN_NAME, COIN_DESC, CONTRACT, 
     BUY_LINK, CHANNEL, VERIFY_ADMIN, MSG_PER_HOUR, LINK_RATIO, ENABLE_NEW_BUY, 
-    EDIT_SELECT_CHANNEL, EDIT_OPTIONS_MENU, CONFIRM_CANCEL_SUB, NETWORK, X_LINK, CONTENT_PREFS
-) = range(17)
+    EDIT_SELECT_CHANNEL, EDIT_OPTIONS_MENU, CONFIRM_CANCEL_SUB, NETWORK, X_LINK, CONTENT_PREFS,
+    LANGUAGE_SELECT, ONBOARDING_INTRO
+) = range(19)
 
 ACTIVE_PUBLISH_TASKS = {}
 
@@ -1020,11 +1023,196 @@ async def group_message_guard(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
 
 
+ONBOARDING_LANGUAGES = {
+    "en": "🇬🇧 English",
+    "zh": "🇨🇳 中文",
+    "ru": "🇷🇺 Русский",
+    "es": "🇪🇸 Español",
+    "ar": "🇸🇦 العربية",
+    "fr": "🇫🇷 Français",
+    "pt": "🇵🇹 Português",
+    "tr": "🇹🇷 Türkçe",
+    "de": "🇩🇪 Deutsch",
+    "hi": "🇮🇳 हिन्दी",
+    "ko": "🇰🇷 한국어",
+    "ja": "🇯🇵 日本語",
+}
+
+ONBOARDING_INTRO = {
+    "en": (
+        "👑 DJANGO AI — THE INTELLIGENCE BEHIND YOUR COMMUNITY\n\n"
+        "DJANGO is more than an auto-poster. It is an AI-powered command layer built to help crypto projects keep their communities active, responsive and alive — even when the owner is away.\n\n"
+        "🧠 AI CONTENT ENGINE\n"
+        "Creates intelligent community content, hype, questions, market-oriented posts and ecosystem content designed around your project.\n\n"
+        "📊 COMMUNITY INTELLIGENCE\n"
+        "Analyzes community behavior and interaction patterns to help keep the group active and engaging.\n\n"
+        "⚡ ACTIVE 24/7\n"
+        "Responds to members, handles common questions, encourages discussion and helps maintain the energy of the group.\n\n"
+        "🛠️ A GROWING TOOLBOX\n"
+        "A powerful and continuously expanding suite of integrated AI tools gives project owners more control, automation and intelligence — even while they are offline.\n\n"
+        "🚀 THIS IS ONLY THE BEGINNING\n"
+        "Major upgrades are already on the roadmap, including an affordable full AI-agent experience for just a few dollars. More intelligence. More automation. More control.\n\n"
+        "Welcome to the next generation of crypto community management.\n"
+        "🔥 Welcome to DJANGO AI."
+    ),
+    "zh": (
+        "👑 DJANGO AI — 你的社区智能中枢\n\n"
+        "DJANGO 不只是自动发帖机器人，而是一套由 AI 驱动的社区管理与增长系统，帮助加密项目保持社区活跃、响应及时，即使项目负责人暂时不在线。\n\n"
+        "🧠 AI 内容引擎\n自动生成社区内容、互动问题、市场相关内容和生态内容，并围绕你的项目进行定制。\n\n"
+        "📊 社区智能\n分析社区互动和行为模式，帮助持续提升群组活跃度与参与感。\n\n"
+        "⚡ 24/7 持续运行\n智能回复成员、处理常见问题、推动讨论，让社区保持活力。\n\n"
+        "🛠️ 持续扩展的工具体系\n集成大量先进 AI 工具，让项目方即使离线，也能获得更强的自动化和控制能力。\n\n"
+        "🚀 这只是开始\n更多升级正在开发中，包括只需几美元即可使用的完整 AI Agent 体验。更多智能、更多自动化、更多控制。\n\n"
+        "🔥 欢迎来到 DJANGO AI。"
+    ),
+    "ru": (
+        "👑 DJANGO AI — ИНТЕЛЛЕКТ ДЛЯ ВАШЕГО СООБЩЕСТВА\n\n"
+        "DJANGO — это больше, чем автопостер. Это AI-система для управления и развития криптосообщества, которая помогает поддерживать активность и отвечать участникам даже тогда, когда владелец проекта отсутствует.\n\n"
+        "🧠 AI-КОНТЕНТ\nСоздаёт интеллектуальные посты, вопросы, рыночный и экосистемный контент под ваш проект.\n\n"
+        "📊 ИНТЕЛЛЕКТ СООБЩЕСТВА\nАнализирует взаимодействия и поведение участников, помогая поддерживать активность группы.\n\n"
+        "⚡ 24/7\nОтвечает участникам, помогает с типичными вопросами и поддерживает живое общение.\n\n"
+        "🛠️ РАСТУЩАЯ ЭКОСИСТЕМА ИНСТРУМЕНТОВ\nБольшой набор интегрированных AI-инструментов даёт владельцу проекта больше автоматизации, контроля и интеллекта даже в его отсутствие.\n\n"
+        "🚀 ЭТО ТОЛЬКО НАЧАЛО\nВ разработке новые возможности, включая полноценный AI Agent всего за несколько долларов.\n\n"
+        "🔥 Добро пожаловать в DJANGO AI."
+    ),
+    "es": (
+        "👑 DJANGO AI — INTELIGENCIA PARA TU COMUNIDAD\n\n"
+        "DJANGO es mucho más que un autoposter. Es una capa de inteligencia impulsada por IA diseñada para mantener las comunidades cripto activas, conectadas y atendidas, incluso cuando el propietario está ausente.\n\n"
+        "🧠 MOTOR DE CONTENIDO IA\nCrea contenido inteligente, preguntas, publicaciones de mercado y contenido de ecosistema adaptado a tu proyecto.\n\n"
+        "📊 INTELIGENCIA DE COMUNIDAD\nAnaliza patrones de interacción y comportamiento para ayudar a mantener el grupo activo.\n\n"
+        "⚡ ACTIVO 24/7\nResponde a miembros, ayuda con preguntas frecuentes y estimula la conversación.\n\n"
+        "🛠️ UN ECOSISTEMA DE HERRAMIENTAS EN EXPANSIÓN\nUna amplia suite de herramientas de IA integradas ofrece más automatización, control e inteligencia.\n\n"
+        "🚀 ESTO ES SOLO EL PRINCIPIO\nLlegan nuevas funciones, incluido un futuro AI Agent completo por solo unos pocos dólares.\n\n"
+        "🔥 Bienvenido a DJANGO AI."
+    ),
+    "ar": (
+        "👑 DJANGO AI — العقل الذكي خلف مجتمعك\n\n"
+        "DJANGO ليس مجرد بوت للنشر الآلي. إنه منظومة ذكاء اصطناعي صُممت لمساعدة مشاريع الكريبتو على إبقاء مجموعاتها نشطة، متفاعلة وسريعة الاستجابة — حتى عندما يكون صاحب المشروع غائبًا.\n\n"
+        "🧠 محرك محتوى بالذكاء الاصطناعي\n"
+        "يصنع محتوى ذكيًا للمجتمع، أسئلة وتفاعلات، منشورات مرتبطة بالسوق والأنظمة البيئية، ومحتوى مصمم حول مشروعك.\n\n"
+        "📊 ذكاء المجتمع\n"
+        "يحلل سلوك الأعضاء وأنماط التفاعل للمساعدة في الحفاظ على نشاط المجموعة وزيادة المشاركة.\n\n"
+        "⚡ يعمل على مدار الساعة\n"
+        "يرد على الأعضاء، يساعد في الأسئلة الشائعة، يشجع النقاش ويحافظ على حيوية المجموعة.\n\n"
+        "🛠️ منظومة متطورة من الأدوات\n"
+        "مجموعة واسعة ومتنامية من أدوات الذكاء الاصطناعي المدمجة تمنح صاحب المشروع تحكمًا وأتمتة وذكاءً أكبر — حتى وهو بعيد عن المجموعة.\n\n"
+        "🚀 هذه مجرد البداية\n"
+        "هناك الكثير من التطويرات القادمة، بما فيها تجربة AI Agent متكاملة بسعر لا يتجاوز بضعة دولارات. المزيد من الذكاء، المزيد من الأتمتة، المزيد من التحكم.\n\n"
+        "🔥 مرحبًا بك في DJANGO AI."
+    ),
+    "fr": (
+        "👑 DJANGO AI — L'INTELLIGENCE DERRIÈRE VOTRE COMMUNAUTÉ\n\n"
+        "DJANGO est bien plus qu'un autoposter. C'est une couche d'intelligence alimentée par l'IA conçue pour garder les communautés crypto actives et réactives, même lorsque le propriétaire est absent.\n\n"
+        "🧠 MOTEUR DE CONTENU IA\nCrée du contenu intelligent, des questions, des publications orientées marché et des contenus écosystème adaptés à votre projet.\n\n"
+        "📊 INTELLIGENCE COMMUNAUTAIRE\nAnalyse les interactions et les comportements afin de contribuer à maintenir le groupe actif.\n\n"
+        "⚡ ACTIF 24/7\nRépond aux membres, aide sur les questions courantes et stimule les discussions.\n\n"
+        "🛠️ UNE BOÎTE À OUTILS EN CONSTANTE ÉVOLUTION\nUne large suite d'outils IA intégrés apporte davantage d'automatisation, de contrôle et d'intelligence.\n\n"
+        "🚀 CE N'EST QUE LE DÉBUT\nDe nombreuses évolutions arrivent, notamment une expérience AI Agent complète pour quelques dollars seulement.\n\n"
+        "🔥 Bienvenue dans DJANGO AI."
+    ),
+}
+
+# Keep the same premium introduction concept for languages whose full localized
+# copy is not yet provided; English is used rather than inventing poor translations.
+for _code in ONBOARDING_LANGUAGES:
+    ONBOARDING_INTRO.setdefault(_code, ONBOARDING_INTRO["en"])
+
+async def show_language_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton(ONBOARDING_LANGUAGES["en"], callback_data="lang_en"), InlineKeyboardButton(ONBOARDING_LANGUAGES["zh"], callback_data="lang_zh")],
+        [InlineKeyboardButton(ONBOARDING_LANGUAGES["ru"], callback_data="lang_ru"), InlineKeyboardButton(ONBOARDING_LANGUAGES["es"], callback_data="lang_es")],
+        [InlineKeyboardButton(ONBOARDING_LANGUAGES["ar"], callback_data="lang_ar"), InlineKeyboardButton(ONBOARDING_LANGUAGES["fr"], callback_data="lang_fr")],
+        [InlineKeyboardButton(ONBOARDING_LANGUAGES["pt"], callback_data="lang_pt"), InlineKeyboardButton(ONBOARDING_LANGUAGES["tr"], callback_data="lang_tr")],
+        [InlineKeyboardButton(ONBOARDING_LANGUAGES["de"], callback_data="lang_de"), InlineKeyboardButton(ONBOARDING_LANGUAGES["hi"], callback_data="lang_hi")],
+        [InlineKeyboardButton(ONBOARDING_LANGUAGES["ko"], callback_data="lang_ko"), InlineKeyboardButton(ONBOARDING_LANGUAGES["ja"], callback_data="lang_ja")],
+    ]
+    text = (
+        "🌐 WELCOME TO DJANGO AI\n\n"
+        "Choose your language to enter the experience.\n"
+        "اختر لغتك للمتابعة."
+    )
+    if update.callback_query:
+        await edit_flow_message(update.callback_query, context, text, reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        await send_flow_reply(update, context, text, reply_markup=InlineKeyboardMarkup(keyboard))
+    return LANGUAGE_SELECT
+
+async def onboarding_language_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    language = query.data.replace("lang_", "")
+    if language not in ONBOARDING_LANGUAGES:
+        return LANGUAGE_SELECT
+    context.user_data["language"] = language
+    context.user_data["onboarding_seen"] = True
+    await asyncio.to_thread(save_onboarding_profile, query.from_user.id, language)
+
+    intro = ONBOARDING_INTRO.get(language, ONBOARDING_INTRO["en"])
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚀 Enter DJANGO AI", callback_data="onboarding_continue")],
+        [
+            InlineKeyboardButton("📢 Telegram", url="https://t.me/django_ai"),
+            InlineKeyboardButton("𝕏 X / Twitter", url="https://x.com/django_ai"),
+        ],
+        [InlineKeyboardButton("🌐 Official Website", url="https://django.ai")],
+    ])
+    await edit_flow_message(query, context, intro, reply_markup=keyboard)
+    return ONBOARDING_INTRO
+
+PUBLIC_MENU_TEXT = {
+    "en": "👑 DJANGO AI — MAIN MENU\n\nYour AI-powered command center for crypto community growth.\n\nChoose what you want to do:",
+    "zh": "👑 DJANGO AI — 主菜单\n\n你的加密社区 AI 智能中枢。\n\n请选择：",
+    "ru": "👑 DJANGO AI — ГЛАВНОЕ МЕНЮ\n\nВаш AI-центр управления криптосообществом.\n\nВыберите действие:",
+    "es": "👑 DJANGO AI — MENÚ PRINCIPAL\n\nTu centro de inteligencia para el crecimiento de comunidades cripto.\n\nElige una opción:",
+    "ar": "👑 DJANGO AI — القائمة الرئيسية\n\nمركز التحكم الذكي لتنشيط مجتمع مشروعك في الكريبتو.\n\nاختر ما تريد القيام به:",
+    "fr": "👑 DJANGO AI — MENU PRINCIPAL\n\nVotre centre de contrôle IA pour le développement de votre communauté crypto.\n\nChoisissez une action:",
+}
+for _code in ONBOARDING_LANGUAGES:
+    PUBLIC_MENU_TEXT.setdefault(_code, PUBLIC_MENU_TEXT["en"])
+
+async def show_public_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    language = context.user_data.get("language", "en")
+    text = PUBLIC_MENU_TEXT.get(language, PUBLIC_MENU_TEXT["en"])
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚀 Launch AI Promoter", callback_data="menu_launch")],
+        [InlineKeyboardButton("💎 View Plans", callback_data="menu_launch")],
+        [InlineKeyboardButton("🌐 Change Language", callback_data="menu_language")],
+        [
+            InlineKeyboardButton("📢 Telegram", url="https://t.me/django_ai"),
+            InlineKeyboardButton("𝕏 X / Twitter", url="https://x.com/django_ai"),
+        ],
+        [InlineKeyboardButton("🌐 Official Website", url="https://django.ai")],
+    ])
+    if update.callback_query:
+        await edit_flow_message(update.callback_query, context, text, reply_markup=keyboard)
+    else:
+        await send_flow_reply(update, context, text, reply_markup=keyboard)
+    return MAIN_MENU
+
+
+async def public_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "menu_language":
+        return await show_language_selection(update, context)
+    if query.data == "menu_launch":
+        return await show_subscription_plans(update, context)
+    return MAIN_MENU
+
+
+async def onboarding_continue(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    return await show_public_main_menu(update, context)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     # Database access can block on a remote PostgreSQL/Supabase connection.
     # Never block Telegram's event loop while handling /start.
-    channels = await asyncio.to_thread(get_user_channels, user_id)
+    start_state = await asyncio.to_thread(get_user_start_state, user_id)
+    channels = start_state.get("channels", [])
+    onboarding_seen = start_state.get("onboarding_seen", False)
+    saved_language = start_state.get("language") or "en"
 
     if channels:
         keyboard = [
@@ -1043,6 +1231,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await edit_flow_message(update.callback_query, context, msg, reply_markup=reply_markup)
         return MAIN_MENU
     else:
+        context.user_data["language"] = saved_language
+        if not onboarding_seen:
+            return await show_language_selection(update, context)
         return await show_subscription_plans(update, context)
 
 async def show_subscription_plans(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1783,10 +1974,20 @@ if __name__ == '__main__':
         entry_points=[
             CommandHandler('start', start),
             CallbackQueryHandler(start, pattern='^back_to_main$'),
-            CallbackQueryHandler(main_menu_handler, pattern='^menu_edit_existing$')
+            CallbackQueryHandler(main_menu_handler, pattern='^menu_edit_existing$'),
+            CallbackQueryHandler(onboarding_language_selected, pattern='^lang_'),
+            CallbackQueryHandler(onboarding_continue, pattern='^onboarding_continue$'),
+            CallbackQueryHandler(public_menu_handler, pattern='^(menu_launch|menu_language)$')
         ],
         states={
+            LANGUAGE_SELECT: [
+                CallbackQueryHandler(onboarding_language_selected, pattern='^lang_(en|zh|ru|es|ar|fr|pt|tr|de|hi|ko|ja)$')
+            ],
+            ONBOARDING_INTRO: [
+                CallbackQueryHandler(onboarding_continue, pattern='^onboarding_continue$')
+            ],
             MAIN_MENU: [
+                CallbackQueryHandler(public_menu_handler, pattern='^(menu_launch|menu_language)$'),
                 CallbackQueryHandler(main_menu_handler, pattern='^(menu_buy_new|menu_edit_existing)$'),
                 CallbackQueryHandler(start, pattern='^back_to_main$')
             ],
